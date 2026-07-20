@@ -90,6 +90,11 @@ const generarMesas = () => {
 // ═══════════════════════════════════════════════════════
 // CARTA REAL — EL GOURMET
 // ═══════════════════════════════════════════════════════
+// MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
+// categorías), este valor cambia. Así el sistema sabe que la carta nueva
+// del código debe reemplazar a la que ya estaba guardada en el servidor.
+const MENU_VERSION = "2026-07-19-c";
+
 const CARTA_BASE = [
   // LOMITOS
   { id:101, nombre:"Lomito simple", desc:"Lomito, tomate, lechuga", precio:24000, categoria:"Lomitos", tipo:"plato", guarnicion:false },
@@ -162,17 +167,22 @@ const CARTA_BASE = [
   { id:214, nombre:"Picada", desc:"Milanesa, aceitunas, papas fritas, salamín", precio:68000, categoria:"Picadas", tipo:"plato", guarnicion:false },
   { id:215, nombre:"Gran Picada", desc:"Milanesa, aceitunas, papas fritas, chorizo, jamonada, queso, empanaditas, pepinitos, coxiña, nuggets de pollo, salsa de ajo", precio:115000, categoria:"Picadas", tipo:"plato", guarnicion:false },
   // PAPAS FRITAS
-  { id:221, nombre:"Papa chica tradicional", desc:"", precio:18000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
-  { id:222, nombre:"Papa doble tradicional", desc:"", precio:34000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
-  { id:223, nombre:"Papa grande gratinada", desc:"", precio:42000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
+  { id:221, nombre:"Papa chica tradicional", desc:"", precio:16000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
+  { id:222, nombre:"Papa doble tradicional", desc:"", precio:30000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
+  { id:223, nombre:"Papa grande gratinada", desc:"", precio:38000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
   { id:224, nombre:"Papa grande gratinada c/Cheddar", desc:"", precio:42000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
-  { id:225, nombre:"Noisette chica", desc:"", precio:20000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
-  { id:226, nombre:"Noisette grande", desc:"", precio:38000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
+  { id:225, nombre:"Noisette chica", desc:"", precio:18000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
+  { id:226, nombre:"Noisette grande", desc:"", precio:35000, categoria:"Papas Fritas", tipo:"guarnicion", guarnicion:false },
+  { id:227, nombre:"Puré", desc:"", precio:15000, categoria:"Guarniciones", tipo:"guarnicion", guarnicion:false },
+  { id:228, nombre:"Ensalada Mixta", desc:"", precio:15000, categoria:"Guarniciones", tipo:"guarnicion", guarnicion:false },
+  { id:229, nombre:"Arroz Solo", desc:"", precio:14000, categoria:"Guarniciones", tipo:"guarnicion", guarnicion:false },
+  { id:230, nombre:"Arroz Queso", desc:"", precio:16000, categoria:"Guarniciones", tipo:"guarnicion", guarnicion:false },
   // EMPANADAS
   { id:231, nombre:"Empanada frita de carne", desc:"", precio:6000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
   { id:232, nombre:"Empanada frita de pollo", desc:"", precio:6000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
   { id:233, nombre:"Empanada frita de palmito", desc:"", precio:7000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
-  { id:234, nombre:"Empanada frita choclo/jamón y queso", desc:"", precio:6000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
+  { id:234, nombre:"Empanada frita de choclo", desc:"", precio:6000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
+  { id:238, nombre:"Empanada frita de jamón y queso", desc:"", precio:6000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
   { id:235, nombre:"Empanada frita roquefort", desc:"Por unidad", precio:8000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
   { id:236, nombre:"Empanada al horno de carne", desc:"", precio:7000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
   { id:237, nombre:"Empanada al horno de pollo", desc:"", precio:7000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
@@ -276,8 +286,10 @@ const CARTA_BASE = [
   // JUGOS
   { id:331, nombre:"Jugo Del Valle 1 litro", desc:"Naranja, manzana o durazno", precio:18000, categoria:"Jugos", tipo:"bebida", stock:12 },
   { id:332, nombre:"Jugo Del Valle 200ml", desc:"Naranja, manzana o durazno", precio:6000, categoria:"Jugos", tipo:"bebida", stock:24 },
-  { id:333, nombre:"Jugo licuado jarra chica", desc:"Durazno o piña", precio:16000, categoria:"Jugos", tipo:"bebida", stock:20 },
-  { id:334, nombre:"Jugo licuado jarra grande", desc:"Durazno o piña", precio:30000, categoria:"Jugos", tipo:"bebida", stock:20 },
+  { id:333, nombre:"Jugo Licuado de Durazno jarra chica", desc:"", precio:16000, categoria:"Jugos", tipo:"bebida", stock:20 },
+  { id:335, nombre:"Jugo Licuado de Durazno jarra grande", desc:"", precio:30000, categoria:"Jugos", tipo:"bebida", stock:20 },
+  { id:336, nombre:"Jugo Licuado de Piña jarra chica", desc:"", precio:16000, categoria:"Jugos", tipo:"bebida", stock:20 },
+  { id:337, nombre:"Jugo Licuado de Piña jarra grande", desc:"", precio:30000, categoria:"Jugos", tipo:"bebida", stock:20 },
   // TRAGOS Y WHISKIES
   { id:341, nombre:"Fernet / Gin Tonic", desc:"La raya", precio:12000, categoria:"Tragos y Whiskies", tipo:"bebida", stock:20 },
   { id:342, nombre:"Chivas Regal Whisky", desc:"", precio:20000, categoria:"Tragos y Whiskies", tipo:"bebida", stock:10 },
@@ -957,7 +969,14 @@ function App() {
   useEffect(() => {
     fetch("/api/state").then(r=>r.json()).then(res=>{
       applyingRemoteRef.current = true;
-      CLAVES_COMPARTIDAS.forEach(k=>{ if(res.data[k]!==undefined) settersCompartidos[k](res.data[k]); });
+      const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
+      CLAVES_COMPARTIDAS.forEach(k=>{
+        if(k==="carta"){
+          if(!menuDesactualizado && res.data.carta!==undefined) setCarta(res.data.carta);
+        } else if(res.data[k]!==undefined){
+          settersCompartidos[k](res.data[k]);
+        }
+      });
       serverRevRef.current = res.rev;
       setConectado(true);
       setCargandoInicial(false);
@@ -970,7 +989,7 @@ function App() {
     if(cargandoInicial||applyingRemoteRef.current) return;
     if(saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(()=>{
-      const payload={}; CLAVES_COMPARTIDAS.forEach(k=>payload[k]=valoresCompartidos[k]);
+      const payload={menuVersion:MENU_VERSION}; CLAVES_COMPARTIDAS.forEach(k=>payload[k]=valoresCompartidos[k]);
       fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rev:serverRevRef.current,data:payload})})
         .then(r=>r.json()).then(res=>{serverRevRef.current=res.rev; setConectado(true);})
         .catch(()=>setConectado(false));
@@ -985,7 +1004,14 @@ function App() {
       fetch("/api/state").then(r=>r.json()).then(res=>{
         if(res.rev>serverRevRef.current){
           applyingRemoteRef.current=true;
-          CLAVES_COMPARTIDAS.forEach(k=>{ if(res.data[k]!==undefined) settersCompartidos[k](res.data[k]); });
+          const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
+          CLAVES_COMPARTIDAS.forEach(k=>{
+            if(k==="carta"){
+              if(!menuDesactualizado && res.data.carta!==undefined) setCarta(res.data.carta);
+            } else if(res.data[k]!==undefined){
+              settersCompartidos[k](res.data[k]);
+            }
+          });
           serverRevRef.current=res.rev;
           setTimeout(()=>{applyingRemoteRef.current=false;},50);
         }
