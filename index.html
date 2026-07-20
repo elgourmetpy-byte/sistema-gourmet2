@@ -9,6 +9,7 @@
   <script src="https://unpkg.com/@babel/standalone@7.23.3/babel.min.js"></script>
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
+    html,body{overscroll-behavior:contain;height:100%}
     body{background:#0f1117;color:#e8e8e8;font-family:'Inter',system-ui,sans-serif}
     select,input,button,textarea{font-family:inherit}
     ::-webkit-scrollbar{width:6px}
@@ -26,6 +27,23 @@
     <div style="color:#6b7280;font-size:13px">Cargando sistema...</div>
   </div>
   <div id="root"></div>
+
+  <script>
+    // Respaldo anti "pull-to-refresh": si el dedo desliza hacia abajo estando
+    // ya arriba del todo de la pantalla, bloquea el gesto para que el navegador
+    // no dispare un refresh accidental de la tablet.
+    (function(){
+      var startY = 0;
+      document.addEventListener("touchstart", function(e){
+        if(e.touches.length===1) startY = e.touches[0].clientY;
+      }, {passive:true});
+      document.addEventListener("touchmove", function(e){
+        var y = e.touches[0].clientY;
+        var scrollTop = document.scrollingElement ? document.scrollingElement.scrollTop : document.body.scrollTop;
+        if(scrollTop<=0 && y>startY){ e.preventDefault(); }
+      }, {passive:false});
+    })();
+  </script>
 
   <script type="text/babel">
     const { useState, useCallback, useRef, useEffect } = React;
@@ -119,8 +137,8 @@ const CARTA_BASE = [
   // MILANESAS
   { id:171, nombre:"Milanesa", desc:"Vacuna o pollo, con fritas, ensalada mixta o puré", precio:48000, categoria:"Milanesas", tipo:"plato", guarnicion:true, opcGuarnicion:["Papas fritas","Ensalada mixta","Puré"] },
   { id:172, nombre:"Milanesa Napolitana", desc:"Con fritas o puré", precio:58000, categoria:"Milanesas", tipo:"plato", guarnicion:true, opcGuarnicion:["Papas fritas","Puré"] },
-  { id:173, nombre:"Milanesa Americana", desc:"Salsa barbacoa, cebolla caramelizada, panceta, queso cheddar con fritas", precio:68000, categoria:"Milanesas", tipo:"plato", guarnicion:false },
-  { id:174, nombre:"Milanesa 4 Quesos", desc:"Con fritas", precio:73000, categoria:"Milanesas", tipo:"plato", guarnicion:false },
+  { id:173, nombre:"Milanesa Americana", desc:"Salsa barbacoa, cebolla caramelizada, panceta, queso cheddar", precio:68000, categoria:"Milanesas", tipo:"plato", guarnicion:true, opcGuarnicion:["Puré","Fritas","Noisette","Mixta","Arroz"] },
+  { id:174, nombre:"Milanesa 4 Quesos", desc:"", precio:73000, categoria:"Milanesas", tipo:"plato", guarnicion:true, opcGuarnicion:["Puré","Fritas","Noisette","Mixta","Arroz"] },
   { id:175, nombre:"Milanesa Provoleta", desc:"Gratinado con provolone, con fritas o puré", precio:68000, categoria:"Milanesas", tipo:"plato", guarnicion:true, opcGuarnicion:["Papas fritas","Puré"] },
   // POLLO AL PLATO
   { id:181, nombre:"Pollo Don José", desc:"Pechuga a la plancha con jamón, queso, guarnición de vegetales", precio:48000, categoria:"Pollo al Plato", tipo:"plato", guarnicion:false },
@@ -160,27 +178,27 @@ const CARTA_BASE = [
   { id:237, nombre:"Empanada al horno de pollo", desc:"", precio:7000, categoria:"Empanadas", tipo:"plato", guarnicion:false },
   // 1/2 PIZZAS
   { id:241, nombre:"½ Pizza Muzzarella", desc:"Salsa de tomate, mozzarella, aceitunas", precio:31000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:242, nombre:"½ Pizza Doble Muzzarella", desc:"Salsa de tomate, muzzarella doble, aceitunas", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:243, nombre:"½ Pizza Tomate", desc:"Salsa de tomate, muzzarella, aceitunas, tomates en frutas", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:244, nombre:"½ Pizza Napolitana", desc:"Salsa de tomate, muzzarella, aceitunas, jamón y huevo", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:245, nombre:"½ Pizza Choclo", desc:"Salsa de tomate, muzzarella, aceitunas, choclo y huevos", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:246, nombre:"½ Pizza Pollo Katupyry", desc:"Salsa de tomate, muzzarella, pollo, aceitunas", precio:43000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:247, nombre:"½ Pizza Peperoni", desc:"Salsa de tomate, muzzarella, peperoni", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:248, nombre:"½ Pizza Cebolla y Ajo", desc:"Salsa de tomate, muzzarella, aceitunas, cebolla y ajo", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:242, nombre:"½ Pizza Doble Muzzarella", desc:"Salsa de tomate, muzzarella doble, aceitunas", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:243, nombre:"½ Pizza Tomate", desc:"Salsa de tomate, muzzarella, aceitunas, tomates en frutas", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:244, nombre:"½ Pizza Napolitana", desc:"Salsa de tomate, muzzarella, aceitunas, jamón y huevo", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:245, nombre:"½ Pizza Choclo", desc:"Salsa de tomate, muzzarella, aceitunas, choclo y huevos", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:246, nombre:"½ Pizza Pollo Katupyry", desc:"Salsa de tomate, muzzarella, pollo, aceitunas", precio:42000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:247, nombre:"½ Pizza Peperoni", desc:"Salsa de tomate, muzzarella, peperoni", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:248, nombre:"½ Pizza Cebolla y Ajo", desc:"Salsa de tomate, muzzarella, aceitunas, cebolla y ajo", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   { id:249, nombre:"½ Pizza Napolitana Especial", desc:"Salsa de tomate, muzzarella, aceitunas, doble jamón y huevo, tomates en frutas", precio:40000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:280, nombre:"½ Pizza Palmito", desc:"Salsa de tomate, muzzarella, aceitunas, palmito y huevos", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:281, nombre:"½ Pizza Atún", desc:"Salsa de tomate, muzzarella, aceitunas, atún", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:282, nombre:"½ Pizza Huevo", desc:"Salsa de tomate, muzzarella, aceitunas, huevo", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:280, nombre:"½ Pizza Palmito", desc:"Salsa de tomate, muzzarella, aceitunas, palmito y huevos", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:281, nombre:"½ Pizza Atún", desc:"Salsa de tomate, muzzarella, aceitunas, atún", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:282, nombre:"½ Pizza Huevo", desc:"Salsa de tomate, muzzarella, aceitunas, huevo", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   { id:283, nombre:"½ Pizza Morrones", desc:"Salsa de tomate, muzzarella, aceitunas, morrones", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:284, nombre:"½ Pizza Panceta", desc:"Salsa de tomate, muzzarella, panceta frita", precio:39000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:285, nombre:"½ Pizza Ananá", desc:"Salsa de tomate, muzzarella, aceitunas, jamón y ananá", precio:37000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:286, nombre:"½ Pizza Anchoas", desc:"Salsa de tomate, muzzarella, anchoas", precio:44000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:287, nombre:"½ Pizza Roquefort", desc:"Salsa de tomate, muzzarella, roquefort", precio:42000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:288, nombre:"½ Pizza Jamón Crudo", desc:"Salsa de tomate, muzzarella, jamón crudo", precio:42000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:289, nombre:"½ Pizza Lomito Ahumado", desc:"Salsa de tomate, muzzarella, lomito ahumado", precio:42000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:290, nombre:"½ Pizza Champiñones", desc:"Salsa de tomate, muzzarella, champiñones", precio:44000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:291, nombre:"½ Pizza Cuatro Quesos", desc:"Salsa de tomate, muzza, dambo, roquefort, reggianito", precio:45000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
-  { id:292, nombre:"½ Pizza Cinco Quesos", desc:"Cuatro quesos + provolone", precio:50000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:284, nombre:"½ Pizza Panceta", desc:"Salsa de tomate, muzzarella, panceta frita", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:285, nombre:"½ Pizza Ananá", desc:"Salsa de tomate, muzzarella, aceitunas, jamón y ananá", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:286, nombre:"½ Pizza Anchoas", desc:"Salsa de tomate, muzzarella, anchoas", precio:43000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:287, nombre:"½ Pizza Roquefort", desc:"Salsa de tomate, muzzarella, roquefort", precio:40000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:288, nombre:"½ Pizza Jamón Crudo", desc:"Salsa de tomate, muzzarella, jamón crudo", precio:40000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:289, nombre:"½ Pizza Lomito Ahumado", desc:"Salsa de tomate, muzzarella, lomito ahumado", precio:40000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:290, nombre:"½ Pizza Champiñones", desc:"Salsa de tomate, muzzarella, champiñones", precio:42000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:291, nombre:"½ Pizza Cuatro Quesos", desc:"Salsa de tomate, muzza, dambo, roquefort, reggianito", precio:44000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:292, nombre:"½ Pizza Cinco Quesos", desc:"Cuatro quesos + provolone", precio:47000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   { id:293, nombre:"½ Pizza Don René", desc:"Salsa de tomate, cuatro quesos con peperoni y champiñones", precio:50000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   // PIZZAS ENTERAS
   { id:251, nombre:"Pizza Muzzarella", desc:"Salsa de tomate, mozzarella, aceitunas", precio:60000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
@@ -303,6 +321,18 @@ const CARTA_BASE = [
   { id:966, nombre:"½ Pizza Pollo Katupyry Sin TACC", desc:"Salsa de tomate, muzzarella, pollo, aceitunas", precio:47000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
   { id:967, nombre:"½ Pizza Peperoni Sin TACC", desc:"Salsa de tomate, muzzarella, calabresa", precio:45000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
   { id:968, nombre:"½ Pizza Cebolla y Ajo Sin TACC", desc:"Salsa de tomate, muzzarella, aceitunas, cebolla y ajo", precio:40000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
+
+  // ═══════════════════════════════════════════════════════
+  // POSTRES
+  // ═══════════════════════════════════════════════════════
+  { id:500, nombre:"Mamón con Queso", desc:"", precio:15000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:501, nombre:"Durazno al Chantilly", desc:"", precio:16000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:502, nombre:"Copa Helada", desc:"", precio:20000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:503, nombre:"Bombón Escocés", desc:"", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:504, nombre:"Bombón Suizo", desc:"", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:505, nombre:"Almendrado", desc:"", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:506, nombre:"Cassata", desc:"3 sabores", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:507, nombre:"Alfajor Helado", desc:"", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -692,7 +722,9 @@ const RECETAS = {
 const CARTA_CON_RECETAS = CARTA_BASE.map(p => ({...p, receta: RECETAS[p.id] || []}));
 
 
-const TODAS_CATEGORIAS = ["Todas", ...new Set(CARTA_BASE.map(p=>p.categoria))];
+const _categoriasOrdenadas = [...new Set(CARTA_BASE.map(p=>p.categoria))]
+  .sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
+const TODAS_CATEGORIAS = ["Todas", ..._categoriasOrdenadas];
 const MEDIOS_PAGO = ["Efectivo","Tarjeta débito","Tarjeta crédito","Transferencia","QR / Mercado Pago","Voucher","Crédito"];
 const ROL_COLOR   = { dueno:"#a855f7", cajero:"#3b82f6", mozo:"#22c55e", delivery:"#f97316", auxiliar:"#06b6d4" };
 const GUARNICIONES_ESTANDAR = ["Puré","Fritas","Noisette","Mixta","Arroz"];
@@ -797,14 +829,35 @@ const ahora  = () => new Date().toLocaleTimeString("es-PY",{hour:"2-digit",minut
 const hoy    = () => new Date().toLocaleDateString("es-PY");
 
 // ═══════════════════════════════════════════════════════
+// SESIÓN LOCAL (por dispositivo/tablet)
+// Guarda quién está logueado, la mesa/delivery abierto y el mozo activo
+// en el almacenamiento propio de la tablet, para que un refresh accidental
+// de la pantalla (pull-to-refresh) NO cierre la sesión ni pierda lo que
+// se estaba haciendo. El cierre real solo pasa con el botón "Salir".
+// ═══════════════════════════════════════════════════════
+const SESION_LOCAL_KEY = "gourmet_sesion_local";
+function cargarSesionLocal(){
+  try{
+    const raw = localStorage.getItem(SESION_LOCAL_KEY);
+    return raw ? JSON.parse(raw) : {};
+  }catch(e){ return {}; }
+}
+function guardarSesionLocal(datos){
+  try{ localStorage.setItem(SESION_LOCAL_KEY, JSON.stringify(datos)); }catch(e){}
+}
+function borrarSesionLocal(){
+  try{ localStorage.removeItem(SESION_LOCAL_KEY); }catch(e){}
+}
+
+// ═══════════════════════════════════════════════════════
 // APP
 // ═══════════════════════════════════════════════════════
 function App() {
-  const [usuario,      setUsuario]      = useState(null);
+  const [usuario,      setUsuario]      = useState(()=>cargarSesionLocal().usuario || null);
   const [loginForm,    setLoginForm]    = useState({usuario:"",pin:""});
   const [loginError,   setLoginError]   = useState("");
   const [usuarios,     setUsuarios]     = useState(USUARIOS);
-  const [mozoSesion,         setMozoSesion]         = useState(null);
+  const [mozoSesion,         setMozoSesion]         = useState(()=>cargarSesionLocal().mozoSesion || null);
   const [modalSeleccionMozo, setModalSeleccionMozo]  = useState(false);
   const [horaReloj,    setHoraReloj]    = useState(new Date());
 
@@ -821,7 +874,7 @@ function App() {
   const [sectorActivo, setSectorActivo] = useState("salon");
   const [toast,        setToast]        = useState(null);
 
-  const [mesaActiva,   setMesaActiva]   = useState(null);
+  const [mesaActiva,   setMesaActiva]   = useState(()=>cargarSesionLocal().mesaActiva ?? null);
   const [modalMesa,    setModalMesa]    = useState(null);
   const [modalPago,    setModalPago]    = useState(null);
   const [ticketModal,  setTicketModal]  = useState(null);
@@ -831,8 +884,16 @@ function App() {
   const [pedidosDelivery,  setPedidosDelivery]  = useState([]);
   const [modalDeliveryRap, setModalDeliveryRap] = useState(false);
   const [deliveryRapForm,  setDeliveryRapForm]  = useState({cliente:"",telefono:"",direccion:"",tipoEntrega:"delivery"});
-  const [deliveryActivo,   setDeliveryActivo]   = useState(null);
+  const [deliveryActivo,   setDeliveryActivo]   = useState(()=>cargarSesionLocal().deliveryActivo ?? null);
   const [enviosDelivery,   setEnviosDelivery]   = useState([]); // Registro de TODOS los viajes de delivery (con o sin cobro), para llevar el total real de envíos por día
+
+  // Mantiene la sesión guardada en la tablet: si hay un refresh accidental
+  // (pull-to-refresh u otro), al volver a cargar se restaura solo, sin pedir
+  // login ni perder la mesa/delivery que se estaba atendiendo.
+  useEffect(()=>{
+    const usuarioSinPin = usuario ? {id:usuario.id, nombre:usuario.nombre, usuario:usuario.usuario, rol:usuario.rol} : null;
+    guardarSesionLocal({usuario:usuarioSinPin, mozoSesion, mesaActiva, deliveryActivo});
+  },[usuario, mozoSesion, mesaActiva, deliveryActivo]);
 
   const [clientes,          setClientes]          = useState([]);
   const [clienteDetalle,    setClienteDetalle]    = useState(null);
@@ -956,7 +1017,7 @@ function App() {
     showToast(`Bienvenido/a, ${u.nombre}`);
     if(u.rol==="mozo"){ setMozoSesion(null); setModalSeleccionMozo(true); }
   };
-  const handleLogout = () => {registrarLog("Salida");setUsuario(null);setLoginForm({usuario:"",pin:""});setMesaActiva(null);setDeliveryActivo(null);setMozoSesion(null);};
+  const handleLogout = () => {registrarLog("Salida");setUsuario(null);setLoginForm({usuario:"",pin:""});setMesaActiva(null);setDeliveryActivo(null);setMozoSesion(null);borrarSesionLocal();};
 
   const elegirMozoSesion = (nombre) => {
     setMozoSesion(nombre);
@@ -1454,7 +1515,14 @@ function App() {
       // Dentro de cada categoría, orden alfabético A-Z por el nombre visible
       return a.nombre.localeCompare(b.nombre, "es", { sensitivity: "base" });
     });
-  const cartaMenuFiltrada = carta.filter(p=>(catMenuFiltro==="Todas"||p.categoria===catMenuFiltro));
+  const cartaMenuFiltrada = carta
+    .filter(p=>(catMenuFiltro==="Todas"||p.categoria===catMenuFiltro))
+    .sort((a,b)=>{
+      const idxA = TODAS_CATEGORIAS.indexOf(a.categoria);
+      const idxB = TODAS_CATEGORIAS.indexOf(b.categoria);
+      if (idxA !== idxB) return idxA - idxB;
+      return a.nombre.localeCompare(b.nombre, "es", { sensitivity: "base" });
+    });
   const ventasHoy   = ventas.filter(v=>v.fecha===hoy());
   const totalHoy    = ventasHoy.reduce((s,v)=>s+v.total,0);
   const enviosDeliveryHoy = enviosDelivery.filter(e=>e.fecha===hoy());
