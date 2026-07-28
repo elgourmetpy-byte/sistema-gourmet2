@@ -1095,6 +1095,64 @@ function App() {
 
   const totalMesa = mesa => mesa.pedidos.reduce((s,p)=>s+p.precio*p.qty,0);
 
+  // ── Puente de impresión automática (envía la comanda a la bandeja) ──
+  const construirTextoComanda = (ticket) => {
+    const lineas = [];
+    if(ticket.tipo==="svf"){
+      // Ticket de cuenta (Sin Valor Fiscal) para el cliente
+      lineas.push(RESTAURANTE.nombre);
+      lineas.push(RESTAURANTE.direccion);
+      lineas.push(ticket.hora||"");
+      lineas.push("--------------------------------");
+      lineas.push("*** SIN VALOR FISCAL ***");
+      lineas.push("--------------------------------");
+      if(ticket.esDelivery){
+        lineas.push(ticket.tipoEntrega==="buscan"?"PASA A BUSCAR":"DELIVERY");
+        lineas.push(ticket.cliente||"");
+        if(ticket.telefono) lineas.push(ticket.telefono);
+      } else {
+        lineas.push(`${ticket.sector} - Mesa #${ticket.numero}`);
+        if(ticket.mozo) lineas.push(`Mozo: ${ticket.mozo}`);
+      }
+      lineas.push("--------------------------------");
+      (ticket.items||[]).forEach(i=>{
+        lineas.push(`${i.qty}x ${i.nombre}${i.guarnicionElegida?` (${i.guarnicionElegida})`:""}`);
+        lineas.push(`   ${fmtGs(i.precio*i.qty)}`);
+        if(i.nota) lineas.push(`   -> ${i.nota}`);
+      });
+      if(ticket.envio>0){ lineas.push("Envío"); lineas.push(`   ${fmtGs(ticket.envio)}`); }
+      lineas.push("--------------------------------");
+      lineas.push(`TOTAL: ${fmtGs(ticket.total)}`);
+      const frase = FRASES[Math.floor(Math.random()*FRASES.length)];
+      lineas.push("");
+      lineas.push(`"${frase.texto}"`);
+      lineas.push(`- ${frase.autor}`);
+    } else {
+      // Comanda de cocina/barra
+      lineas.push(ticket.esDelivery ? (ticket.tipoEntrega==="buscan"?"PASA A BUSCAR":"DELIVERY") : `${ticket.sector} - Mesa #${ticket.numero}`);
+      if(ticket.esDelivery){ lineas.push(ticket.cliente||""); if(ticket.telefono) lineas.push(ticket.telefono); }
+      if(!ticket.esDelivery && ticket.mozo) lineas.push(`Mozo: ${ticket.mozo}`);
+      lineas.push(ticket.hora||"");
+      lineas.push("--------------------------------");
+      if(ticket.itemsCocina?.length){
+        lineas.push("COCINA");
+        ticket.itemsCocina.forEach(i=>lineas.push(`${i.qty}x ${i.nombre}`));
+      }
+      if(ticket.itemsBarra?.length){
+        lineas.push("");
+        lineas.push("BARRA");
+        ticket.itemsBarra.forEach(i=>lineas.push(`${i.qty}x ${i.nombre}`));
+      }
+      if(ticket.notas) lineas.push(`Nota: ${ticket.notas}`);
+    }
+    return lineas.join("\n");
+  };
+
+  const enviarAImpresora = (ticket) => {
+    const texto = construirTextoComanda(ticket);
+    fetch("/api/print-jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({texto})}).catch(()=>{});
+  };
+
   // Ticket incremental — solo ítems NO enviados aún
   const enviarCocina = (mesa) => {
     const yaEnviados = new Set(mesa.enviados||[]);
@@ -1102,7 +1160,9 @@ function App() {
     if(!nuevos.length){showToast("No hay ítems nuevos para enviar","warn");return;}
     const itemsCocina = nuevos.filter(p=>p.tipo!=="bebida");
     const itemsBarra  = nuevos.filter(p=>p.tipo==="bebida");
-    setTicketModal({tipo:"mesa",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,itemsCocina,itemsBarra,hora:ahora()});
+    const ticketComanda = {tipo:"mesa",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,itemsCocina,itemsBarra,hora:ahora()};
+    setTicketModal(ticketComanda);
+    enviarAImpresora(ticketComanda);
     // Marcar como enviados
     const nuevasKeys = nuevos.map(p=>p._key);
     setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,enviados:[...(m.enviados||[]),...nuevasKeys]}:m));
@@ -1148,7 +1208,9 @@ function App() {
 
   // Ticket "Sin Valor Fiscal" al pedir cuenta
   const ticketSVF = (mesa) => {
-    setTicketModal({tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:mesa.pedidos,total:totalMesa(mesa),hora:ahora()});
+    const ticketCuenta = {tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:mesa.pedidos,total:totalMesa(mesa),hora:ahora()};
+    setTicketModal(ticketCuenta);
+    enviarAImpresora(ticketCuenta);
     setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"cuenta"}:m));
   };
 
@@ -1156,7 +1218,9 @@ function App() {
   const ticketSVFDelivery = (pedido) => {
     const envio = pedido.tipoEntrega==="delivery" ? (pedido.costoEnvio||0) : 0;
     const total = pedido.items.reduce((s,i)=>s+i.precio*i.qty,0)+envio;
-    setTicketModal({tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora()});
+    const ticketCuentaDelivery = {tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora()};
+    setTicketModal(ticketCuentaDelivery);
+    enviarAImpresora(ticketCuentaDelivery);
   };
 
   // ── Delivery rápido ───────────────────────────────────
@@ -1340,7 +1404,9 @@ function App() {
     if(!nuevos.length){showToast("No hay ítems nuevos","warn");return;}
     const itemsCocina=nuevos.filter(p=>p.tipo!=="bebida");
     const itemsBarra=nuevos.filter(p=>p.tipo==="bebida");
-    setTicketModal({tipo:pedido.tipoEntrega||"delivery",cliente:pedido.cliente,telefono:pedido.telefono,itemsCocina,itemsBarra,hora:ahora(),esDelivery:true,notas:pedido.notas||""});
+    const ticketComandaDelivery = {tipo:pedido.tipoEntrega||"delivery",cliente:pedido.cliente,telefono:pedido.telefono,itemsCocina,itemsBarra,hora:ahora(),esDelivery:true,notas:pedido.notas||""};
+    setTicketModal(ticketComandaDelivery);
+    enviarAImpresora(ticketComandaDelivery);
     const nuevasKeys=nuevos.map(p=>p._key);
     setPedidosDelivery(prev=>prev.map(p=>p.id===pedido.id?{...p,enviados:[...(p.enviados||[]),...nuevasKeys]}:p));
     registrarLog("Pedido cocina delivery",pedido.cliente);
