@@ -2919,11 +2919,12 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
   const [escala,setEscala] = useState(1.2);
   const piePagina = FRASES[Math.floor(Math.random()*FRASES.length)];
   return(
-    <div style={{background:"#fff",color:"#000",borderRadius:12,padding:22,width:330,fontFamily:"monospace",maxHeight:"90vh",overflowY:"auto"}}>
+    <div className="ticket-cocina-box" style={{background:"#fff",color:"#000",borderRadius:12,padding:22,width:330,fontFamily:"monospace",maxHeight:"90vh",overflowY:"auto"}}>
       <style>{`@media print {
         @page { size: 80mm auto; margin: 0; }
         html, body { width: 80mm; margin: 0; padding: 0; }
         .no-print { display: none !important; }
+        .ticket-cocina-box { max-height: none !important; overflow: visible !important; }
       }`}</style>
       <div className="no-print" style={{display:"flex",justifyContent:"center",alignItems:"center",gap:6,marginBottom:10}}>
         <span style={{fontSize:10,color:"#666"}}>Tamaño letra:</span>
