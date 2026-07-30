@@ -2944,11 +2944,8 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
     <div className="ticket-cocina-box" style={{background:"#fff",color:"#000",borderRadius:12,padding:22,width:330,fontFamily:"monospace",maxHeight:"90vh",overflowY:"auto"}}>
       <style>{`@media print {
         @page { size: 80mm auto; margin: 0; }
-        html, body { width: 80mm; margin: 0 !important; padding: 0 !important; height: auto !important; }
-        body * { display: none !important; }
-        .modal-overlay { display: block !important; position: static !important; inset: auto !important; background: none !important; padding: 0 !important; height: auto !important; }
-        .modal-overlay * { display: revert !important; }
-        .no-print, .no-print * { display: none !important; }
+        html, body { width: 80mm; margin: 0; padding: 0; }
+        .no-print { display: none !important; }
         .ticket-cocina-box { max-height: none !important; overflow: visible !important; }
       }`}</style>
       <div className="no-print" style={{display:"flex",justifyContent:"center",alignItems:"center",gap:6,marginBottom:10}}>
@@ -3046,7 +3043,7 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
 // SUB-COMPONENTES
 // ═══════════════════════════════════════════════════════
 function ModalOverlay({ children, onClose }) {
-  return(<div className="modal-overlay" onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:12}}><div onClick={e=>e.stopPropagation()}>{children}</div></div>);
+  return(<div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:12}}><div onClick={e=>e.stopPropagation()}>{children}</div></div>);
 }
 
 function AbrirMesaForm({ mesa, sectores, mozoFijo, onAbrir, onClose }) {
