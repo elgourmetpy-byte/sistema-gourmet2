@@ -1690,7 +1690,7 @@ function App() {
   // MAIN
   // ═══════════════════════════════════════════════════════
   return(
-    <div style={{fontFamily:"'Inter',sans-serif",minHeight:"100vh",background:"#0f1117",color:"#e8e8e8"}}>
+    <div id="app-root" style={{fontFamily:"'Inter',sans-serif",minHeight:"100vh",background:"#0f1117",color:"#e8e8e8"}}>
       {toast&&<div style={{position:"fixed",top:18,right:18,zIndex:9999,background:toast.tipo==="warn"?"#f97316":toast.tipo==="err"?"#ef4444":"#22c55e",color:"#fff",padding:"10px 18px",borderRadius:10,fontWeight:600,fontSize:13,boxShadow:"0 4px 20px rgba(0,0,0,0.5)"}}>{toast.msg}</div>}
 
       {ticketModal&&<ModalOverlay onClose={()=>setTicketModal(null)}><TicketCocina ticket={ticketModal} restaurante={RESTAURANTE} fmtGs={fmtGs} onClose={()=>setTicketModal(null)}/></ModalOverlay>}
@@ -2945,6 +2945,7 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
       <style>{`@media print {
         @page { size: 80mm auto; margin: 0; }
         html, body { width: 80mm; margin: 0; padding: 0; }
+        #app-root > *:not(.modal-overlay) { display: none !important; }
         .no-print { display: none !important; }
         .ticket-cocina-box { max-height: none !important; overflow: visible !important; }
         .modal-overlay { position: static !important; background: none !important; display: block !important; padding: 0 !important; }
