@@ -93,7 +93,7 @@ const generarMesas = () => {
 // MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
 // categorías), este valor cambia. Así el sistema sabe que la carta nueva
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
-const MENU_VERSION = "2026-07-19-c";
+const MENU_VERSION = "2026-08-02-a";
 
 const CARTA_BASE = [
   // LOMITOS
@@ -112,6 +112,7 @@ const CARTA_BASE = [
   { id:121, nombre:"Hamburguesa simple", desc:"Hamburguesa, tomate, lechuga", precio:22000, categoria:"Hamburguesas", tipo:"plato", guarnicion:false },
   { id:122, nombre:"Hamburguesa especial", desc:"Hamburguesa, tomate, lechuga, jamón, queso, huevo", precio:32000, categoria:"Hamburguesas", tipo:"plato", guarnicion:false },
   { id:123, nombre:"Hamburguesa Americana", desc:"Hamburguesa, panceta, queso cheddar", precio:32000, categoria:"Hamburguesas", tipo:"plato", guarnicion:false },
+  { id:979, nombre:"Pan Carne Queso", desc:"Pan, carne, queso", precio:22000, categoria:"Hamburguesas", tipo:"plato", guarnicion:false },
   // CHANGUITOS DE HAMBURGUESA
   { id:131, nombre:"Changuito de Hamburguesa", desc:"Hamburguesa, tomate, jamón, queso, huevo, muzzarella", precio:40000, categoria:"Changuitos de Hamburguesa", tipo:"plato", guarnicion:false },
   { id:132, nombre:"Changuito H. Napolitano", desc:"Hamburguesa, jamón, queso, huevo, muzzarella con jamón y huevo", precio:43000, categoria:"Changuitos de Hamburguesa", tipo:"plato", guarnicion:false },
@@ -210,6 +211,8 @@ const CARTA_BASE = [
   { id:291, nombre:"½ Pizza Cuatro Quesos", desc:"Salsa de tomate, muzza, dambo, roquefort, reggianito", precio:44000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   { id:292, nombre:"½ Pizza Cinco Quesos", desc:"Cuatro quesos + provolone", precio:47000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   { id:293, nombre:"½ Pizza Don René", desc:"Salsa de tomate, cuatro quesos con peperoni y champiñones", precio:50000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:973, nombre:"½ Pizza Calabreza", desc:"Salsa de tomate, muzzarella, calabresa", precio:38000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
+  { id:974, nombre:"½ Pizza Pollo Solo", desc:"Salsa de tomate, muzzarella, pollo", precio:36000, categoria:"½ Pizzas", tipo:"plato", guarnicion:false },
   // PIZZAS ENTERAS
   { id:251, nombre:"Pizza Muzzarella", desc:"Salsa de tomate, mozzarella, aceitunas", precio:60000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
   { id:252, nombre:"Pizza Doble Muzzarella", desc:"Salsa de tomate, muzzarella doble, aceitunas", precio:72000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
@@ -230,6 +233,9 @@ const CARTA_BASE = [
   { id:267, nombre:"Pizza Ananá", desc:"Salsa de tomate, muzzarella, aceitunas, jamón y ananá", precio:72000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
   { id:268, nombre:"Pizza Cuatro Estaciones", desc:"Napolitana, peperoni, choclo, palmito", precio:74000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
   { id:269, nombre:"Pizza Anchoas", desc:"Salsa de tomate, muzzarella, anchoas", precio:84000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
+  { id:970, nombre:"Pizza Calabreza", desc:"Salsa de tomate, muzzarella, calabresa", precio:72000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
+  { id:971, nombre:"Pizza Pollo Solo", desc:"Salsa de tomate, muzzarella, pollo", precio:70000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
+  { id:972, nombre:"Pizza Cebolla y Ajo", desc:"Salsa de tomate, muzzarella, aceitunas, cebolla y ajo", precio:70000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
   // PIZZAS ENTERAS ADICIONALES
   { id:901, nombre:"Pizza Tomate", desc:"Salsa de tomate, muzzarella, aceitunas, tomates en frutas", precio:70000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
   { id:902, nombre:"Pizza Atún", desc:"Salsa de tomate, muzzarella, aceitunas, atún", precio:72000, categoria:"Pizzas", tipo:"plato", guarnicion:false },
@@ -243,6 +249,9 @@ const CARTA_BASE = [
   { id:274, nombre:"Opcional: panceta para papas", desc:"", precio:7000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
   { id:275, nombre:"Opcional: queso Katupyry", desc:"", precio:16000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
   { id:276, nombre:"Opcional: borde queso Katupyry", desc:"", precio:10000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
+  { id:976, nombre:"Opcional: doble muzza", desc:"", precio:10000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
+  { id:977, nombre:"Opcional: peperoni y/u otros", desc:"", precio:10000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
+  { id:978, nombre:"Opcional: ajillo", desc:"", precio:2000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
   // BEBIDAS - CERVEZAS
   { id:301, nombre:"Heineken 330ml", desc:"", precio:12000, categoria:"Cervezas", tipo:"bebida", stock:24 },
   { id:302, nombre:"Heineken 710ml", desc:"", precio:25000, categoria:"Cervezas", tipo:"bebida", stock:24 },
@@ -254,6 +263,7 @@ const CARTA_BASE = [
   { id:308, nombre:"Sin alcohol 330ml", desc:"Heineken 0.0 / Stella / Corona", precio:12000, categoria:"Cervezas", tipo:"bebida", stock:12 },
   { id:309, nombre:"Michelob lata 269ml", desc:"", precio:9000, categoria:"Cervezas", tipo:"bebida", stock:24 },
   { id:310, nombre:"Michelob lata 350ml", desc:"", precio:12000, categoria:"Cervezas", tipo:"bebida", stock:24 },
+  { id:980, nombre:"Michelob 710cc", desc:"", precio:22000, categoria:"Cervezas", tipo:"bebida", stock:12 },
   // GASEOSAS
   { id:401, nombre:"Sprite 500cc", desc:"", precio:10000, categoria:"Gaseosas", tipo:"bebida", stock:24 },
   { id:402, nombre:"Sprite Cero 500cc", desc:"", precio:10000, categoria:"Gaseosas", tipo:"bebida", stock:24 },
@@ -333,6 +343,7 @@ const CARTA_BASE = [
   { id:966, nombre:"½ Pizza Pollo Katupyry Sin TACC", desc:"Salsa de tomate, muzzarella, pollo, aceitunas", precio:47000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
   { id:967, nombre:"½ Pizza Peperoni Sin TACC", desc:"Salsa de tomate, muzzarella, calabresa", precio:45000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
   { id:968, nombre:"½ Pizza Cebolla y Ajo Sin TACC", desc:"Salsa de tomate, muzzarella, aceitunas, cebolla y ajo", precio:40000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
+  { id:969, nombre:"Changuito Peperoni Sin TACC", desc:"Lomito, tomate, jamón, queso, huevo, muzzarella, peperoni", precio:47000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
 
   // ═══════════════════════════════════════════════════════
   // POSTRES
@@ -345,6 +356,9 @@ const CARTA_BASE = [
   { id:505, nombre:"Almendrado", desc:"", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
   { id:506, nombre:"Cassata", desc:"3 sabores", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
   { id:507, nombre:"Alfajor Helado", desc:"", precio:17000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:981, nombre:"Brownie con Helado", desc:"", precio:25000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:982, nombre:"Helado palito", desc:"", precio:10000, categoria:"Postres", tipo:"plato", guarnicion:false },
+  { id:983, nombre:"Helado vasito", desc:"", precio:12000, categoria:"Postres", tipo:"plato", guarnicion:false },
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -1211,7 +1225,7 @@ function App() {
 
   // Ticket "Sin Valor Fiscal" al pedir cuenta
   const ticketSVF = (mesa) => {
-    const ticketCuenta = {tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:mesa.pedidos,total:totalMesa(mesa),hora:ahora()};
+    const ticketCuenta = {tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:mesa.pedidos,total:totalMesa(mesa),hora:ahora(),fecha:hoy()};
     setTicketModal(ticketCuenta);
     enviarAImpresora(ticketCuenta);
     setHistorialTickets(prev=>[...prev,{...ticketCuenta,id:Date.now(),fecha:hoy()}]);
@@ -1222,7 +1236,7 @@ function App() {
   const ticketSVFDelivery = (pedido) => {
     const envio = pedido.tipoEntrega==="delivery" ? (pedido.costoEnvio||0) : 0;
     const total = pedido.items.reduce((s,i)=>s+i.precio*i.qty,0)+envio;
-    const ticketCuentaDelivery = {tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora()};
+    const ticketCuentaDelivery = {tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora(),fecha:hoy()};
     setTicketModal(ticketCuentaDelivery);
     enviarAImpresora(ticketCuentaDelivery);
     setHistorialTickets(prev=>[...prev,{...ticketCuentaDelivery,id:Date.now(),fecha:hoy()}]);
@@ -2962,7 +2976,7 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
           <div style={{textAlign:"center",marginBottom:10}}>
             <div style={{fontWeight:900,fontSize:17}}>{restaurante.nombre}</div>
             <div style={{fontSize:10,color:"#666"}}>{restaurante.direccion}</div>
-            <div style={{fontSize:11,color:"#666",marginTop:2}}>{ticket.hora}</div>
+            <div style={{fontSize:11,color:"#666",marginTop:2}}>{ticket.fecha?`${ticket.fecha} — `:""}{ticket.hora}</div>
           </div>
           <div style={{textAlign:"center",border:"2px solid #000",padding:"6px 0",marginBottom:10}}>
             <div style={{fontWeight:900,fontSize:13}}>⚠ SIN VALOR FISCAL ⚠</div>
