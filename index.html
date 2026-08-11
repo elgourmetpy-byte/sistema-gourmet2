@@ -64,7 +64,7 @@ const USUARIOS = [
 ];
 
 const PERMISOS = {
-  dueno:    ["mesas","delivery","cc","insumos","compras","menu","caja","arqueo","auditoria","config"],
+  dueno:    ["mesas","delivery","cc","insumos","compras","menu","caja","reportes","arqueo","auditoria","config"],
   auxiliar: ["insumos","compras"],
   cajero:   ["mesas","delivery","cc","caja","arqueo"],
   mozo:     ["mesas","delivery"],
@@ -93,7 +93,7 @@ const generarMesas = () => {
 // MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
 // categorías), este valor cambia. Así el sistema sabe que la carta nueva
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
-const MENU_VERSION = "2026-08-02-a";
+const MENU_VERSION = "2026-08-11-a";
 
 const CARTA_BASE = [
   // LOMITOS
@@ -252,6 +252,8 @@ const CARTA_BASE = [
   { id:976, nombre:"Opcional: doble muzza", desc:"", precio:10000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
   { id:977, nombre:"Opcional: peperoni y/u otros", desc:"", precio:10000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
   { id:978, nombre:"Opcional: ajillo", desc:"", precio:2000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
+  { id:986, nombre:"Opcional: Doble Carne Lomito", desc:"", precio:7000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
+  { id:987, nombre:"Opcional: Doble Carne Hamburguesa", desc:"", precio:6000, categoria:"Opcionales", tipo:"plato", guarnicion:false },
   // BEBIDAS - CERVEZAS
   { id:301, nombre:"Heineken 330ml", desc:"", precio:12000, categoria:"Cervezas", tipo:"bebida", stock:24 },
   { id:302, nombre:"Heineken 710ml", desc:"", precio:25000, categoria:"Cervezas", tipo:"bebida", stock:24 },
@@ -286,6 +288,7 @@ const CARTA_BASE = [
   { id:419, nombre:"Agua con gas 500cc", desc:"", precio:6000, categoria:"Gaseosas", tipo:"bebida", stock:24 },
   { id:420, nombre:"Pomelo 500cc", desc:"", precio:10000, categoria:"Gaseosas", tipo:"bebida", stock:24 },
   { id:421, nombre:"Agua Tónica 500cc de la Costa", desc:"", precio:10000, categoria:"Gaseosas", tipo:"bebida", stock:24 },
+  { id:422, nombre:"Coca-Cola 500cc", desc:"", precio:10000, categoria:"Gaseosas", tipo:"bebida", stock:24 },
   // AGUAS Y REFRESCOS
   { id:321, nombre:"Agua 500ml", desc:"Sin gas o con gas", precio:6000, categoria:"Aguas y Refrescos", tipo:"bebida", stock:48 },
   { id:322, nombre:"Agua tónica 500ml", desc:"O lata", precio:10000, categoria:"Aguas y Refrescos", tipo:"bebida", stock:24 },
@@ -307,6 +310,7 @@ const CARTA_BASE = [
   { id:344, nombre:"Johnnie Walker Etiqueta Negra", desc:"", precio:22000, categoria:"Tragos y Whiskies", tipo:"bebida", stock:10 },
   { id:345, nombre:"Caipirinha / Daikyri jarra chica", desc:"Durazno", precio:22000, categoria:"Tragos y Whiskies", tipo:"bebida", stock:20 },
   { id:346, nombre:"Caipirinha / Daikyri jarra grande", desc:"Durazno", precio:40000, categoria:"Tragos y Whiskies", tipo:"bebida", stock:20 },
+  { id:347, nombre:"Smirnoff", desc:"", precio:14000, categoria:"Tragos y Whiskies", tipo:"bebida", stock:24 },
   // VINOS
   { id:351, nombre:"Rutini Cabernet-Malbec", desc:"", precio:190000, categoria:"Vinos", tipo:"bebida", stock:6 },
   { id:352, nombre:"Luigi Bosca Malbec", desc:"", precio:180000, categoria:"Vinos", tipo:"bebida", stock:6 },
@@ -320,6 +324,7 @@ const CARTA_BASE = [
   { id:360, nombre:"Quinta do Morgado", desc:"", precio:73000, categoria:"Vinos", tipo:"bebida", stock:6 },
   { id:361, nombre:"Latitud 33 Chardonnay Blanc", desc:"", precio:79000, categoria:"Vinos", tipo:"bebida", stock:6 },
   { id:362, nombre:"Cosecha Tardía Dulce Natural", desc:"", precio:83000, categoria:"Vinos", tipo:"bebida", stock:6 },
+  { id:363, nombre:"Una copa", desc:"Copa de vino", precio:16000, categoria:"Vinos", tipo:"bebida", stock:0, sinControlStock:true },
 
   // ═══════════════════════════════════════════════════════
   // CELÍACO SIN TACC
@@ -344,6 +349,8 @@ const CARTA_BASE = [
   { id:967, nombre:"½ Pizza Peperoni Sin TACC", desc:"Salsa de tomate, muzzarella, calabresa", precio:45000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
   { id:968, nombre:"½ Pizza Cebolla y Ajo Sin TACC", desc:"Salsa de tomate, muzzarella, aceitunas, cebolla y ajo", precio:40000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
   { id:969, nombre:"Changuito Peperoni Sin TACC", desc:"Lomito, tomate, jamón, queso, huevo, muzzarella, peperoni", precio:47000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
+  { id:984, nombre:"Changuito Roquefort Sin TACC", desc:"Lomito, tomate, jamón, queso, huevo, gratinado de muzzarella con roquefort", precio:48000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
+  { id:985, nombre:"Papas Gratinadas con Cheddar Sin TACC", desc:"Papas gratinadas con queso cheddar", precio:46000, categoria:"Celíaco Sin TACC", tipo:"plato", guarnicion:false },
 
   // ═══════════════════════════════════════════════════════
   // POSTRES
@@ -359,6 +366,14 @@ const CARTA_BASE = [
   { id:981, nombre:"Brownie con Helado", desc:"", precio:25000, categoria:"Postres", tipo:"plato", guarnicion:false },
   { id:982, nombre:"Helado palito", desc:"", precio:10000, categoria:"Postres", tipo:"plato", guarnicion:false },
   { id:983, nombre:"Helado vasito", desc:"", precio:12000, categoria:"Postres", tipo:"plato", guarnicion:false },
+
+  // ═══════════════════════════════════════════════════════
+  // CAFÉ
+  // ═══════════════════════════════════════════════════════
+  { id:601, nombre:"Café chico", desc:"", precio:7000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
+  { id:602, nombre:"Café mediano", desc:"", precio:10000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
+  { id:603, nombre:"Café con leche", desc:"", precio:12000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
+  { id:604, nombre:"Té", desc:"", precio:7000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -952,6 +967,9 @@ function App() {
   const [nuevoInsumo,        setNuevoInsumo]        = useState({nombre:"",unidad:"kg",stock:"",stockMinimo:""});
   const [modalEditarInsumo,  setModalEditarInsumo]  = useState(null);
   const [confirmarEliminarInsumo, setConfirmarEliminarInsumo] = useState(null);
+  const [periodoRep,  setPeriodoRep]  = useState("semana");   // hoy | semana | mes | todo
+  const [ordenRep,    setOrdenRep]    = useState("monto");    // monto | cantidad
+  const [buscarRep,   setBuscarRep]   = useState("");
   const [empaques,           setEmpaques]           = useState(EMPAQUES_INICIALES);
   const [limpieza,           setLimpieza]           = useState(LIMPIEZA_INICIALES);
   const [compras,            setCompras]            = useState([]);
@@ -1041,6 +1059,9 @@ function App() {
   // ── helpers ──────────────────────────────────────────
   const puede = sec => usuario && PERMISOS[usuario.rol]?.includes(sec);
   const esDueno = () => usuario?.rol === "dueno";
+  // Roles habilitados para cobrar y cerrar mesas (libera la mesa)
+  const ROLES_COBRO = ["dueno","cajero"];
+  const puedeCobrarMesa = () => ROLES_COBRO.includes(usuario?.rol);
 
   const showToast = (msg, tipo="ok") => {
     setToast({msg,tipo});
@@ -1190,7 +1211,7 @@ function App() {
   const descontarStockPorVenta = useCallback((items) => {
     // Bebidas: descuentan directamente de su propio stock en la carta
     setCarta(prev=>prev.map(p=>{
-      if(p.tipo!=="bebida")return p;
+      if(p.tipo!=="bebida"||p.sinControlStock)return p;
       const vendido=items.filter(i=>i.id===p.id).reduce((s,i)=>s+i.qty,0);
       return vendido>0?{...p,stock:Math.max(0,(p.stock||0)-vendido)}:p;
     }));
@@ -1207,6 +1228,12 @@ function App() {
   },[]);
 
   const cerrarCuenta = (mesa,medioPago,propina=0,clienteCCId=null) => {
+    if(!puedeCobrarMesa()){
+      registrarLog("Intento de cobro no autorizado",`${usuario?.nombre||"?"} (${usuario?.rol||"?"}) · Mesa #${mesa.numero}`);
+      showToast("Tu usuario no tiene permiso para cobrar ni cerrar mesas","err");
+      setModalPago(null);
+      return;
+    }
     const total=totalMesa(mesa)+propina;
     descontarStockPorVenta(mesa.pedidos);
     if(medioPago==="Crédito"&&clienteCCId){
@@ -1653,6 +1680,55 @@ function App() {
   const porMedioPago= MEDIOS_PAGO.filter(m=>m!=="Crédito").map(m=>({medio:m,total:ventasHoy.filter(v=>v.medioPago===m).reduce((s,v)=>s+v.total,0),cant:ventasHoy.filter(v=>v.medioPago===m).length})).filter(m=>m.cant>0);
   const ventasCreditoHoy = ventasHoy.filter(v=>v.medioPago==="Crédito");
   const totalCreditoHoy = ventasCreditoHoy.reduce((s,v)=>s+v.total,0);
+  // ══ REPORTES ══════════════════════════════════════════
+  // Las fechas se guardan como "d/m/aaaa" (es-PY) → hay que parsearlas
+  const parseFechaPY = f => { const [d,m,a]=String(f||"").split("/").map(Number); return new Date(a||1970,(m||1)-1,d||1); };
+  const diasDelPeriodo = {hoy:1, semana:7, mes:30, todo:99999}[periodoRep];
+  const desdeRep = (()=>{ const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-(diasDelPeriodo-1)); return d; })();
+  const ventasRep = ventas.filter(v=>{
+    if(periodoRep==="todo") return true;
+    return parseFechaPY(v.fecha) >= desdeRep;
+  });
+  const totalRep    = ventasRep.reduce((s,v)=>s+v.total,0);
+  const propinasRep = ventasRep.reduce((s,v)=>s+(v.propina||0),0);
+  const ticketProm  = ventasRep.length ? Math.round(totalRep/ventasRep.length) : 0;
+  // Total vendido por día
+  const ventasPorDiaRep = Object.values(ventasRep.reduce((acc,v)=>{
+    if(!acc[v.fecha]) acc[v.fecha]={fecha:v.fecha,total:0,cant:0};
+    acc[v.fecha].total+=v.total; acc[v.fecha].cant+=1;
+    return acc;
+  },{})).sort((a,b)=>parseFechaPY(b.fecha)-parseFechaPY(a.fecha));
+  const maxDiaRep = Math.max(1,...ventasPorDiaRep.map(d=>d.total));
+  // Ranking de productos vendidos
+  const productosRep = Object.values(ventasRep.reduce((acc,v)=>{
+    (v.items||[]).forEach(it=>{
+      const k=it.id||it.nombre;
+      if(!acc[k]) acc[k]={id:k,nombre:it.nombre,categoria:it.categoria||"—",cantidad:0,monto:0};
+      acc[k].cantidad += (it.qty||0);
+      acc[k].monto    += (it.precio||0)*(it.qty||0);
+    });
+    return acc;
+  },{}))
+    .filter(p=>!buscarRep||p.nombre.toLowerCase().includes(buscarRep.toLowerCase())||p.categoria.toLowerCase().includes(buscarRep.toLowerCase()))
+    .sort((a,b)=> ordenRep==="cantidad" ? b.cantidad-a.cantidad : b.monto-a.monto);
+  const totalProductosRep = productosRep.reduce((s,p)=>s+p.monto,0);
+  const unidadesRep       = productosRep.reduce((s,p)=>s+p.cantidad,0);
+  // Por categoría
+  const categoriasRep = Object.values(productosRep.reduce((acc,p)=>{
+    if(!acc[p.categoria]) acc[p.categoria]={categoria:p.categoria,cantidad:0,monto:0};
+    acc[p.categoria].cantidad+=p.cantidad; acc[p.categoria].monto+=p.monto;
+    return acc;
+  },{})).sort((a,b)=>b.monto-a.monto);
+  const descargarReporteCSV = () => {
+    const filas=[["Producto","Categoria","Cantidad","Total Gs"],
+      ...productosRep.map(p=>[p.nombre,p.categoria,p.cantidad,p.monto])];
+    const csv="\uFEFF"+filas.map(f=>f.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\n");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8;"}));
+    a.download=`ventas-por-producto-${periodoRep}-${hoy().replace(/\//g,"-")}.csv`;
+    a.click();
+  };
+
   const mesasOcupadas=mesas.filter(m=>m.estado!=="libre").length;
   const mesasSector  =mesas.filter(m=>m.sector===sectorActivo);
   const mesaObj      =mesas.find(m=>m.id===mesaActiva);
@@ -1692,10 +1768,6 @@ function App() {
         ))}
         {loginError&&<div style={{color:"#ef4444",fontSize:13,marginBottom:8}}>⚠️ {loginError}</div>}
         <button onClick={handleLogin} style={{width:"100%",background:"#f97316",border:"none",color:"#fff",borderRadius:10,padding:12,cursor:"pointer",fontWeight:800,fontSize:15,marginTop:8}}>Ingresar</button>
-        <div style={{marginTop:16,padding:10,background:"#0f1117",borderRadius:8}}>
-          <div style={{fontSize:10,color:"#6b7280",marginBottom:4}}>Usuarios:</div>
-          {usuarios.map(u=><div key={u.id} style={{fontSize:10,color:"#4b5563",marginBottom:1}}><span style={{color:"#f97316"}}>{u.usuario}</span> / {u.pin} — {u.nombre}</div>)}
-        </div>
       </div>
     </div>
   );
@@ -1720,6 +1792,7 @@ function App() {
           {key:"insumos",  label:"Insumos",    badge:insumosBajos.length||null, bc:"#ef4444"},
           {key:"compras",  label:"Compras",    badge:null},
           {key:"caja",     label:"Caja",       badge:null},
+          {key:"reportes", label:"📊 Reportes", badge:null},
           {key:"arqueo",   label:"Arqueo",     badge:arqueoAbierto&&!arqueoAbierto.cerrado?"●":null,bc:"#22c55e"},
           {key:"auditoria",label:"Auditoría",  badge:null},
           {key:"config",   label:"⚙️ Config",  badge:null},
@@ -1818,7 +1891,7 @@ function App() {
             onEnviarCocina={()=>enviarCocina(mesaObj)}
             onPedirCuenta={()=>ticketSVF(mesaObj)}
             onCobrar={()=>setModalPago({tipo:"mesa",data:mesaObj})}
-            puedeCobrar={usuario.rol!=="mozo"}
+            puedeCobrar={puedeCobrarMesa()}
           />
         )}
 
@@ -1971,7 +2044,7 @@ function App() {
                   </div>
                   <div style={{display:"flex",flexDirection:"column",gap:5}}>
                     {cartaFiltrada.map(item=>{
-                      const sinStock=item.tipo==="bebida"&&(item.stock||0)===0;
+                      const sinStock=item.tipo==="bebida"&&!item.sinControlStock&&(item.stock||0)===0;
                       return(
                         <ItemButton key={item.id} item={item} sinStock={sinStock} fmtGs={fmtGs}
                           onAgregar={(nota,gua)=>agregarItemDelivery(deliveryActivo,item,nota,gua)}/>
@@ -2467,6 +2540,99 @@ function App() {
           </div>
         )}
 
+        {/* ══ REPORTES ══ */}
+        {seccion==="reportes"&&(
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
+              <h2 style={{margin:0}}>📊 Reportes de ventas</h2>
+              <div style={{display:"flex",gap:4,marginLeft:"auto",flexWrap:"wrap"}}>
+                {[["hoy","Hoy"],["semana","Últimos 7 días"],["mes","Últimos 30 días"],["todo","Todo"]].map(([k,l])=>(
+                  <button key={k} onClick={()=>setPeriodoRep(k)} style={{background:periodoRep===k?"#f97316":"#1a1d27",color:periodoRep===k?"#fff":"#9ca3af",border:"1px solid #2a2d3a",borderRadius:7,padding:"7px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>{l}</button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px,1fr))",gap:11,marginBottom:20}}>
+              <StatCard label="Total vendido"    value={fmtGs(totalRep)}     color="#22c55e"/>
+              <StatCard label="Cantidad de ventas" value={ventasRep.length}  color="#3b82f6"/>
+              <StatCard label="Ticket promedio"  value={fmtGs(ticketProm)}   color="#f97316"/>
+              <StatCard label="Unidades vendidas" value={unidadesRep}        color="#a855f7"/>
+              <StatCard label="Propinas"         value={fmtGs(propinasRep)}  color="#06b6d4"/>
+            </div>
+
+            {ventasRep.length===0?(
+              <div style={{background:"#1a1d27",border:"1px solid #2a2d3a",borderRadius:13,padding:30,textAlign:"center"}}>
+                <div style={{fontSize:34,marginBottom:8}}>📭</div>
+                <p style={{color:"#6b7280",fontSize:13,margin:0}}>No hay ventas registradas en este período.</p>
+              </div>
+            ):(<>
+
+            {/* ── Total por día ── */}
+            <div style={{background:"#1a1d27",border:"1px solid #2a2d3a",borderRadius:13,padding:16,marginBottom:18}}>
+              <h3 style={{margin:"0 0 12px",fontSize:14}}>Ventas por día</h3>
+              <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:280,overflowY:"auto"}}>
+                {ventasPorDiaRep.map(d=>(
+                  <div key={d.fecha}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
+                      <span style={{color:"#9ca3af"}}>{d.fecha}{d.fecha===hoy()?" (hoy)":""} · {d.cant} venta{d.cant>1?"s":""}</span>
+                      <span style={{fontWeight:800,color:"#22c55e"}}>{fmtGs(d.total)}</span>
+                    </div>
+                    <div style={{background:"#0f1117",borderRadius:4,height:7,overflow:"hidden"}}>
+                      <div style={{width:`${Math.round(d.total/maxDiaRep*100)}%`,height:"100%",background:"#22c55e",borderRadius:4}}></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Por categoría ── */}
+            <div style={{background:"#1a1d27",border:"1px solid #2a2d3a",borderRadius:13,padding:16,marginBottom:18}}>
+              <h3 style={{margin:"0 0 12px",fontSize:14}}>Por categoría</h3>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(180px,1fr))",gap:9}}>
+                {categoriasRep.map(c=>(
+                  <div key={c.categoria} style={{background:"#0f1117",borderRadius:9,padding:11}}>
+                    <div style={{fontSize:11,color:"#9ca3af",marginBottom:3}}>{c.categoria}</div>
+                    <div style={{fontWeight:800,fontSize:15,color:"#f97316"}}>{fmtGs(c.monto)}</div>
+                    <div style={{fontSize:10,color:"#6b7280"}}>{c.cantidad} unidad{c.cantidad!==1?"es":""} · {totalProductosRep?Math.round(c.monto/totalProductosRep*100):0}%</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Ranking por producto ── */}
+            <div style={{background:"#1a1d27",border:"1px solid #2a2d3a",borderRadius:13,padding:16}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+                <h3 style={{margin:0,fontSize:14}}>Ventas por producto</h3>
+                <input placeholder="Buscar producto o categoría..." value={buscarRep} onChange={e=>setBuscarRep(e.target.value)}
+                  style={{background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"6px 10px",fontSize:11,flex:1,minWidth:140}}/>
+                <div style={{display:"flex",gap:4}}>
+                  {[["monto","Por Gs"],["cantidad","Por cantidad"]].map(([k,l])=>(
+                    <button key={k} onClick={()=>setOrdenRep(k)} style={{background:ordenRep===k?"#f97316":"#0f1117",color:ordenRep===k?"#fff":"#9ca3af",border:"1px solid #2a2d3a",borderRadius:7,padding:"6px 10px",cursor:"pointer",fontWeight:700,fontSize:11}}>{l}</button>
+                  ))}
+                </div>
+                <button onClick={descargarReporteCSV} style={{background:"#2a2d3a",border:"1px solid #22c55e",color:"#22c55e",borderRadius:7,padding:"6px 11px",cursor:"pointer",fontWeight:700,fontSize:11}}>⬇ CSV</button>
+              </div>
+              <div style={{maxHeight:520,overflowY:"auto"}}>
+                <div style={{display:"grid",gridTemplateColumns:"28px 1fr 70px 110px",gap:8,padding:"6px 9px",fontSize:10,color:"#6b7280",fontWeight:700,textTransform:"uppercase",position:"sticky",top:0,background:"#1a1d27"}}>
+                  <span>#</span><span>Producto</span><span style={{textAlign:"right"}}>Cant.</span><span style={{textAlign:"right"}}>Total</span>
+                </div>
+                {productosRep.map((p,i)=>(
+                  <div key={p.id} style={{display:"grid",gridTemplateColumns:"28px 1fr 70px 110px",gap:8,alignItems:"center",padding:"8px 9px",background:i%2?"transparent":"#0f1117",borderRadius:7,fontSize:12}}>
+                    <span style={{color:i<3?"#f97316":"#4b5563",fontWeight:800}}>{i+1}</span>
+                    <span><span style={{fontWeight:600}}>{p.nombre}</span><span style={{color:"#6b7280",fontSize:10,display:"block"}}>{p.categoria}</span></span>
+                    <span style={{textAlign:"right",fontWeight:700,color:"#a855f7"}}>{p.cantidad}</span>
+                    <span style={{textAlign:"right",fontWeight:800,color:"#22c55e"}}>{fmtGs(p.monto)}</span>
+                  </div>
+                ))}
+                {productosRep.length===0&&<p style={{color:"#4b5563",fontSize:12,padding:"10px 9px",margin:0}}>Ningún producto coincide con la búsqueda.</p>}
+              </div>
+              <p style={{margin:"12px 0 0",fontSize:10,color:"#6b7280"}}>El total por producto se calcula sobre el precio de venta de cada ítem. No incluye el costo de envío del delivery ni las propinas.</p>
+            </div>
+
+            </>)}
+          </div>
+        )}
+
         {/* ══ ARQUEO ══ */}
         {seccion==="arqueo"&&(
           <div>
@@ -2687,7 +2853,7 @@ function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busq
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(145px,1fr))",gap:7}}>
             {cartaFiltrada.map(item=>{
-              const sinStock=item.tipo==="bebida"&&(item.stock||0)===0;
+              const sinStock=item.tipo==="bebida"&&!item.sinControlStock&&(item.stock||0)===0;
               return(<ItemButton key={item.id} item={item} sinStock={sinStock} fmtGs={fmtGs} onAgregar={(nota,gua)=>onAgregarItem(item,nota,gua)}/>);
             })}
           </div>
@@ -2753,7 +2919,7 @@ function ItemButton({ item, sinStock, fmtGs, onAgregar }) {
         <div style={{fontWeight:600,fontSize:11,marginBottom:2,paddingRight:16}}>{item.nombre}</div>
         {item.desc&&<div style={{fontSize:9,color:"#6b7280",marginBottom:2,lineHeight:1.3}}>{item.desc.length>50?item.desc.slice(0,50)+"...":item.desc}</div>}
         <div style={{color:"#f97316",fontWeight:700,fontSize:12}}>{fmtGs(item.precio)}</div>
-        {item.tipo==="bebida"&&<div style={{fontSize:9,color:sinStock?"#ef4444":"#6b7280",marginTop:1}}>{sinStock?"Sin stock":`Stock: ${item.stock}`}</div>}
+        {item.tipo==="bebida"&&!item.sinControlStock&&<div style={{fontSize:9,color:sinStock?"#ef4444":"#6b7280",marginTop:1}}>{sinStock?"Sin stock":`Stock: ${item.stock}`}</div>}
         {item.guarnicion&&<div style={{fontSize:9,color:"#22c55e",marginTop:1}}>Elegir guarnición</div>}
       </button>
       {!necesitaModal&&!sinStock&&(
