@@ -43,6 +43,39 @@
         if(scrollTop<=0 && y>startY){ e.preventDefault(); }
       }, {passive:false});
     })();
+
+    // ── PAUSA DE REFRESCO DURANTE LA IMPRESIÓN ──────────────────────
+    // El sistema consulta el servidor cada 4 segundos y vuelve a dibujar la
+    // pantalla. En las tablets Android eso interrumpe el trabajo de impresión
+    // del navegador: la comanda solo salía al abandonar la página.
+    // Acá pausamos ese refresco mientras se imprime y lo reanudamos después.
+    window.__IMPRIMIENDO__ = false;
+    (function(){
+      var redDeSeguridad = null;
+
+      window.__pausarRefresco__ = function(){
+        window.__IMPRIMIENDO__ = true;
+        if(redDeSeguridad) clearTimeout(redDeSeguridad);
+        // Si por algún motivo no llega el aviso de "terminé de imprimir",
+        // el refresco vuelve solo al minuto. Nunca queda pausado para siempre.
+        redDeSeguridad = setTimeout(function(){ window.__IMPRIMIENDO__ = false; }, 60000);
+      };
+
+      window.__reanudarRefresco__ = function(){
+        if(redDeSeguridad){ clearTimeout(redDeSeguridad); redDeSeguridad = null; }
+        // Margen de 3 segundos para que el navegador termine de mandar el papel.
+        setTimeout(function(){ window.__IMPRIMIENDO__ = false; }, 3000);
+      };
+
+      window.addEventListener("beforeprint", window.__pausarRefresco__);
+      window.addEventListener("afterprint",  window.__reanudarRefresco__);
+
+      // En Android el diálogo de impresión tapa la página. Cuando el mozo
+      // vuelve a ver el sistema, damos por terminada la impresión.
+      document.addEventListener("visibilitychange", function(){
+        if(!document.hidden && window.__IMPRIMIENDO__) window.__reanudarRefresco__();
+      });
+    })();
   </script>
 
   <script type="text/babel">
@@ -93,7 +126,7 @@ const generarMesas = () => {
 // MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
 // categorías), este valor cambia. Así el sistema sabe que la carta nueva
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
-const MENU_VERSION = "2026-08-11-a";
+const MENU_VERSION = "2026-08-13-a";
 
 const CARTA_BASE = [
   // LOMITOS
@@ -374,6 +407,14 @@ const CARTA_BASE = [
   { id:602, nombre:"Café mediano", desc:"", precio:10000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
   { id:603, nombre:"Café con leche", desc:"", precio:12000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
   { id:604, nombre:"Té", desc:"", precio:7000, categoria:"Café", tipo:"bebida", stock:0, sinControlStock:true },
+
+  // ═══════════════════════════════════════════════════════
+  // MEDIO METRO
+  // ═══════════════════════════════════════════════════════
+  { id:701, nombre:"Especial", desc:"", precio:98000, categoria:"Medio metro", tipo:"plato", guarnicion:false },
+  { id:702, nombre:"Ejecutivo", desc:"", precio:108000, categoria:"Medio metro", tipo:"plato", guarnicion:false },
+  { id:703, nombre:"VIP", desc:"", precio:115000, categoria:"Medio metro", tipo:"plato", guarnicion:false },
+  { id:704, nombre:"Premium", desc:"", precio:125000, categoria:"Medio metro", tipo:"plato", guarnicion:false },
 ];
 
 // ═══════════════════════════════════════════════════════
@@ -766,6 +807,36 @@ const CARTA_CON_RECETAS = CARTA_BASE.map(p => ({...p, receta: RECETAS[p.id] || [
 const _categoriasOrdenadas = [...new Set(CARTA_BASE.map(p=>p.categoria))]
   .sort((a,b)=>a.localeCompare(b,"es",{sensitivity:"base"}));
 const TODAS_CATEGORIAS = ["Todas", ..._categoriasOrdenadas];
+
+// ═══════════════════════════════════════════════════════
+// BÚSQUEDA DE CLIENTES (sin tildes, sin mayúsculas, por relevancia)
+// ═══════════════════════════════════════════════════════
+// Pasa a minúsculas y saca las tildes: "MARÍA" y "maria" quedan iguales
+const _normTexto = (s) => String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+
+// Puntaje: 0 = el nombre empieza con lo buscado
+//          1 = alguna palabra del nombre empieza con lo buscado
+//          2 = aparece en el medio de una palabra
+//         99 = no coincide
+const _rankCliente = (nombre, q) => {
+  const n = _normTexto(nombre), b = _normTexto(q);
+  if(!b) return 0;
+  if(n.startsWith(b)) return 0;
+  if(n.split(/[^a-z0-9]+/).some(p=>p && p.startsWith(b))) return 1;
+  if(n.includes(b)) return 2;
+  return 99;
+};
+
+// Filtra y ordena: primero los más relevantes, y dentro de cada grupo alfabético
+const filtrarClientesPorNombre = (lista, q) => {
+  const b = _normTexto(q);
+  if(!b) return [...lista].sort((a,c)=>a.nombre.localeCompare(c.nombre,"es"));
+  return [...lista]
+    .map(c=>({ c, r:_rankCliente(c.nombre, q) }))
+    .filter(x=>x.r < 99)
+    .sort((x,y)=> x.r!==y.r ? x.r-y.r : x.c.nombre.localeCompare(y.c.nombre,"es"))
+    .map(x=>x.c);
+};
 const MEDIOS_PAGO = ["Efectivo","Tarjeta débito","Tarjeta crédito","Transferencia","QR / Mercado Pago","Voucher","Crédito"];
 const ROL_COLOR   = { dueno:"#a855f7", cajero:"#3b82f6", mozo:"#22c55e", delivery:"#f97316", auxiliar:"#06b6d4" };
 const GUARNICIONES_ESTANDAR = ["Puré","Fritas","Noisette","Mixta","Arroz"];
@@ -1036,6 +1107,9 @@ function App() {
   // Revisa cada 4 segundos si otro dispositivo cambió algo
   useEffect(() => {
     const t = setInterval(()=>{
+      // Mientras se está imprimiendo no consultamos ni redibujamos nada:
+      // si la pantalla se refresca, el navegador cancela el trabajo de impresión.
+      if(window.__IMPRIMIENDO__) return;
       fetch("/api/state").then(r=>r.json()).then(res=>{
         if(res.rev>serverRevRef.current){
           applyingRemoteRef.current=true;
@@ -2077,7 +2151,7 @@ function App() {
                 <input placeholder="🔍 Buscar por nombre..." value={busquedaClienteDelivery} onChange={e=>setBusquedaClienteDelivery(e.target.value)} autoComplete="off"
                   style={{width:"100%",background:"#0f1117",border:"1px solid #a855f7",color:"#e8e8e8",borderRadius:7,padding:"9px 10px",fontSize:13,boxSizing:"border-box",marginBottom:10}}/>
                 <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {[...clientesDelivery].filter(c=>c.nombre.toLowerCase().includes(busquedaClienteDelivery.toLowerCase())).sort((a,b)=>a.nombre.localeCompare(b.nombre,"es")).map(c=>(
+                  {filtrarClientesPorNombre(clientesDelivery, busquedaClienteDelivery).map(c=>(
                     <div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0f1117",borderRadius:8,padding:"8px 10px"}}>
                       <div>
                         <div style={{fontWeight:700,fontSize:13}}>{c.nombre}</div>
@@ -2170,7 +2244,7 @@ function App() {
                     const pendiente=c.deudas.filter(d=>d.estado!=="saldado").reduce((s,d)=>s+(d.total-d.pagos.reduce((sp,p)=>sp+p.monto,0)),0);
                     return pendiente>0;
                   }
-                  return c.nombre.toLowerCase().includes(busquedaClienteCC.toLowerCase());
+                  return _normTexto(c.nombre).includes(_normTexto(busquedaClienteCC));
                 })
                 .sort((a,b)=>{
                   // Deudores primero, ordenados por monto mayor
@@ -2198,7 +2272,7 @@ function App() {
               })}
               {clientes.filter(c=>{
                 if(busquedaClienteCC==="__DEUDORES__") return c.deudas.filter(d=>d.estado!=="saldado").reduce((s,d)=>s+(d.total-d.pagos.reduce((sp,p)=>sp+p.monto,0)),0)>0;
-                return c.nombre.toLowerCase().includes(busquedaClienteCC.toLowerCase());
+                return _normTexto(c.nombre).includes(_normTexto(busquedaClienteCC));
               }).length===0&&(
                 <div style={{gridColumn:"1/-1",textAlign:"center",color:"#4b5563",padding:30,fontSize:13}}>
                   {busquedaClienteCC==="__DEUDORES__"?"🎉 Nadie debe nada en este momento":"Sin clientes que coincidan"}
@@ -3214,7 +3288,12 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
 
       </div>
       <div className="no-print" style={{textAlign:"center",marginTop:14,display:"flex",gap:8}}>
-        <button onClick={()=>window.print()} style={{flex:1,background:"#000",color:"#fff",border:"none",borderRadius:7,padding:"9px 0",cursor:"pointer",fontWeight:700,fontSize:13}}>🖨 Imprimir</button>
+        <button onClick={()=>{
+          // Frenamos el refresco ANTES de abrir el diálogo de impresión.
+          // (Refuerzo por si la tablet no avisa con el evento "beforeprint".)
+          if(window.__pausarRefresco__) window.__pausarRefresco__();
+          setTimeout(()=>window.print(),60);
+        }} style={{flex:1,background:"#000",color:"#fff",border:"none",borderRadius:7,padding:"9px 0",cursor:"pointer",fontWeight:700,fontSize:13}}>🖨 Imprimir</button>
         <button onClick={onClose} style={{flex:1,background:"#eee",color:"#333",border:"none",borderRadius:7,padding:"9px 0",cursor:"pointer",fontWeight:600,fontSize:13,marginLeft:8}}>Cerrar</button>
       </div>
     </div>
@@ -3387,9 +3466,7 @@ function ModalAbrirTurno({ fmtGs, onAbrir, onClose }) {
 // ═══════════════════════════════════════════════════════
 function BuscadorClientes({ clientes, onSeleccionar, placeholder, maxAltura }) {
   const [busqueda,setBusqueda]=useState("");
-  const filtrados = [...clientes]
-    .filter(c=>c.nombre.toLowerCase().includes(busqueda.toLowerCase()))
-    .sort((a,b)=>a.nombre.localeCompare(b.nombre,"es"));
+  const filtrados = filtrarClientesPorNombre(clientes, busqueda);
   return (
     <div>
       <input placeholder={placeholder||"Buscar por nombre..."} value={busqueda} onChange={e=>setBusqueda(e.target.value)} autoComplete="off"
