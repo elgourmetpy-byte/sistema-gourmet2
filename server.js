@@ -53,6 +53,39 @@ app.post("/api/state", (req, res) => {
   res.json(estado);
 });
 
+// ═══════════════════════════════════════════════════════
+// BUZÓN DE IMPRESIÓN
+// Las tablets y la PC dejan acá el texto de cada comanda.
+// El Agente de Impresión que corre en la PC del local lo
+// retira cada pocos segundos y lo manda a la impresora.
+// Se guarda solo en memoria: si el servidor se reinicia,
+// las comandas viejas se descartan (ya no sirven).
+// ═══════════════════════════════════════════════════════
+let colaImpresion = [];
+let proximoJobId = 1;
+
+// El sistema deja una comanda en el buzón
+app.post("/api/print-jobs", (req, res) => {
+  const texto = (req.body && req.body.texto) || "";
+  if (!String(texto).trim()) return res.status(400).json({ error: "texto vacío" });
+  const job = { id: proximoJobId++, texto: String(texto), creado: new Date().toISOString() };
+  colaImpresion.push(job);
+  if (colaImpresion.length > 200) colaImpresion = colaImpresion.slice(-200);
+  res.json({ ok: true, id: job.id });
+});
+
+// El Agente pregunta qué hay para imprimir
+app.get("/api/print-jobs", (req, res) => {
+  res.json({ jobs: colaImpresion });
+});
+
+// El Agente avisa que ya imprimió una comanda
+app.post("/api/print-jobs/:id/done", (req, res) => {
+  const id = Number(req.params.id);
+  colaImpresion = colaImpresion.filter(j => j.id !== id);
+  res.json({ ok: true, pendientes: colaImpresion.length });
+});
+
 // ── Para saber si el servidor está vivo ─────────────────
 app.get("/health", (req, res) => res.send("ok"));
 
