@@ -126,7 +126,7 @@ const generarMesas = () => {
 // MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
 // categorías), este valor cambia. Así el sistema sabe que la carta nueva
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
-const MENU_VERSION = "2026-08-13-a";
+const MENU_VERSION = "2026-08-14-a";
 
 const CARTA_BASE = [
   // LOMITOS
@@ -1130,6 +1130,38 @@ function App() {
     return ()=>clearInterval(t);
   },[]);
 
+  // ═══════════════════════════════════════════════════════
+  // REPARACIÓN DE IDENTIFICACIONES REPETIDAS
+  // Las importaciones viejas de contactos por CSV crearon muchos
+  // clientes con el MISMO número interno de identificación. Eso hacía
+  // que la lista se dibujara mal (un mismo nombre repetido muchas
+  // veces) y que al editar un cliente se editaran todos los que
+  // compartían número. Esto lo corrige una sola vez y queda guardado.
+  // ═══════════════════════════════════════════════════════
+  const hayIdsRepetidos = (lista) => {
+    const vistos = new Set();
+    for(const c of (lista||[])){
+      if(c.id===undefined||c.id===null||vistos.has(c.id)) return true;
+      vistos.add(c.id);
+    }
+    return false;
+  };
+  const repararIds = (lista) => {
+    const usados = new Set(); let n = Date.now();
+    return (lista||[]).map(c=>{
+      if(c.id!==undefined&&c.id!==null&&!usados.has(c.id)){ usados.add(c.id); return c; }
+      while(usados.has(n)) n++;
+      usados.add(n);
+      return {...c, id:n++};
+    });
+  };
+  useEffect(() => {
+    if(cargandoInicial) return;
+    if(hayIdsRepetidos(clientesDelivery)) setClientesDelivery(prev=>repararIds(prev));
+    if(hayIdsRepetidos(clientes))         setClientes(prev=>repararIds(prev));
+    // eslint-disable-next-line
+  },[cargandoInicial,clientesDelivery,clientes]);
+
   // ── helpers ──────────────────────────────────────────
   const puede = sec => usuario && PERMISOS[usuario.rol]?.includes(sec);
   const esDueno = () => usuario?.rol === "dueno";
@@ -1436,6 +1468,8 @@ function App() {
   // que comparten nombre pero tienen teléfonos distintos (ej. varios "Ale").
   const fusionarContactosImportados = (listaActual, contactos) => {
     const lista=[...listaActual]; let nuevos=0, actualizados=0, repetidos=0;
+    // Identificaciones únicas garantizadas: arrancamos por encima de todo lo que ya existe
+    let proximoId = lista.reduce((m,x)=>Math.max(m, Number(x.id)||0), Date.now()) + 1;
     contactos.forEach(c=>{
       const nombreTrim=c.nombre.trim();
       const telTrim=(c.telefono||"").trim();
@@ -1446,7 +1480,7 @@ function App() {
         lista[idxSoloNombre]={...lista[idxSoloNombre],telefono:telTrim||lista[idxSoloNombre].telefono,direccion:lista[idxSoloNombre].direccion||c.direccion||""};
         actualizados++;
       } else {
-        lista.push({id:Date.now()+Math.random(),nombre:nombreTrim,telefono:telTrim,direccion:c.direccion||""});
+        lista.push({id:proximoId++,nombre:nombreTrim,telefono:telTrim,direccion:c.direccion||""});
         nuevos++;
       }
     });
@@ -2151,8 +2185,8 @@ function App() {
                 <input placeholder="🔍 Buscar por nombre..." value={busquedaClienteDelivery} onChange={e=>setBusquedaClienteDelivery(e.target.value)} autoComplete="off"
                   style={{width:"100%",background:"#0f1117",border:"1px solid #a855f7",color:"#e8e8e8",borderRadius:7,padding:"9px 10px",fontSize:13,boxSizing:"border-box",marginBottom:10}}/>
                 <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {filtrarClientesPorNombre(clientesDelivery, busquedaClienteDelivery).map(c=>(
-                    <div key={c.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0f1117",borderRadius:8,padding:"8px 10px"}}>
+                  {filtrarClientesPorNombre(clientesDelivery, busquedaClienteDelivery).slice(0,60).map((c,i)=>(
+                    <div key={`${c.id}_${i}`} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0f1117",borderRadius:8,padding:"8px 10px"}}>
                       <div>
                         <div style={{fontWeight:700,fontSize:13}}>{c.nombre}</div>
                         <div style={{fontSize:10,color:"#6b7280"}}>{c.telefono||"—"}{c.direccion?` · ${c.direccion}`:""}</div>
@@ -3466,18 +3500,22 @@ function ModalAbrirTurno({ fmtGs, onAbrir, onClose }) {
 // ═══════════════════════════════════════════════════════
 function BuscadorClientes({ clientes, onSeleccionar, placeholder, maxAltura }) {
   const [busqueda,setBusqueda]=useState("");
-  const filtrados = filtrarClientesPorNombre(clientes, busqueda);
+  const encontrados = filtrarClientesPorNombre(clientes, busqueda);
+  // Con ~1600 contactos, dibujar la lista entera en cada tecla traba la tablet.
+  // Mostramos los 30 primeros; escribiendo un poco más se afina solo.
+  const filtrados = encontrados.slice(0,30);
   return (
     <div>
       <input placeholder={placeholder||"Buscar por nombre..."} value={busqueda} onChange={e=>setBusqueda(e.target.value)} autoComplete="off"
         style={{width:"100%",background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"8px 10px",fontSize:13,boxSizing:"border-box",marginBottom:6}}/>
       <div style={{maxHeight:maxAltura||200,overflowY:"auto",display:"flex",flexDirection:"column",gap:4}}>
         {filtrados.length===0&&<div style={{color:"#4b5563",fontSize:12,textAlign:"center",padding:10}}>Sin resultados</div>}
-        {filtrados.map(c=>(
-          <button key={c.id} onClick={()=>onSeleccionar(c)} style={{textAlign:"left",background:"#1a1d27",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:6,padding:"7px 10px",cursor:"pointer",fontSize:12}}>
+        {filtrados.map((c,i)=>(
+          <button key={`${c.id}_${i}`} onClick={()=>onSeleccionar(c)} style={{textAlign:"left",background:"#1a1d27",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:6,padding:"7px 10px",cursor:"pointer",fontSize:12}}>
             {c.nombre}{c.telefono?` · ${c.telefono}`:""}
           </button>
         ))}
+        {encontrados.length>filtrados.length&&<div style={{color:"#6b7280",fontSize:11,textAlign:"center",padding:6}}>…y {encontrados.length-filtrados.length} más — seguí escribiendo para afinar</div>}
       </div>
     </div>
   );
