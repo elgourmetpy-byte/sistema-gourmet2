@@ -126,7 +126,7 @@ const generarMesas = () => {
 // MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
 // categorías), este valor cambia. Así el sistema sabe que la carta nueva
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
-const MENU_VERSION = "2026-08-14-d";
+const MENU_VERSION = "2026-08-14-e";
 
 const CARTA_BASE = [
   // LOMITOS
@@ -1954,7 +1954,7 @@ function App() {
 
       {/* NAV */}
       <nav style={{background:"#1a1d27",borderBottom:"1px solid #2a2d3a",padding:"0 12px",display:"flex",alignItems:"center",gap:2,flexWrap:"wrap"}}>
-        <div style={{color:"#f97316",fontWeight:900,fontSize:16,padding:"12px 10px 12px 0",marginRight:4}}>🍽️ {RESTAURANTE.nombre}</div>
+        <div style={{color:"#f97316",fontWeight:900,fontSize:16,padding:"12px 10px 12px 0",marginRight:4}}>🍽️ {RESTAURANTE.nombre}<span style={{color:"#4b5563",fontWeight:600,fontSize:9,marginLeft:6}}>v{MENU_VERSION}</span></div>
         {[
           {key:"mesas",    label:"Mesas",      badge:mesasOcupadas||null,   bc:"#f97316"},
           {key:"delivery", label:"Delivery",   badge:pedidosDelivery.filter(p=>p.estado!=="entregado").length||null,bc:"#f97316"},
