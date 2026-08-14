@@ -126,7 +126,7 @@ const generarMesas = () => {
 // MENU_VERSION: cada vez que se actualiza la carta (precios, productos,
 // categorías), este valor cambia. Así el sistema sabe que la carta nueva
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
-const MENU_VERSION = "2026-08-14-a";
+const MENU_VERSION = "2026-08-14-d";
 
 const CARTA_BASE = [
   // LOMITOS
@@ -809,6 +809,39 @@ const _categoriasOrdenadas = [...new Set(CARTA_BASE.map(p=>p.categoria))]
 const TODAS_CATEGORIAS = ["Todas", ..._categoriasOrdenadas];
 
 // ═══════════════════════════════════════════════════════
+// CONTROL DE LO YA ENVIADO A COCINA
+// Antes se guardaba solo QUÉ plato se mandó. El problema:
+// si el cliente pedía otra hamburguesa igual, el sistema veía
+// que esa hamburguesa "ya estaba enviada" y no dejaba imprimir
+// la comanda del agregado. Ahora se guarda CUÁNTOS se mandaron,
+// así el agregado siempre sale.
+// ═══════════════════════════════════════════════════════
+// Convierte el formato viejo (lista de platos) al nuevo (cuántos de cada uno)
+const mapaEnviados = (enviados, items) => {
+  if(!enviados) return {};
+  if(!Array.isArray(enviados)) return {...enviados};
+  const m = {};
+  (items||[]).forEach(i=>{ if(enviados.includes(i._key)) m[i._key] = i.qty; });
+  return m;
+};
+// Lo que falta mandar a cocina, con la cantidad exacta pendiente
+const itemsPendientes = (items, enviados) => {
+  const env = mapaEnviados(enviados, items);
+  return (items||[])
+    .map(i=>{ const falta = i.qty - (env[i._key]||0); return falta>0 ? {...i, qty:falta} : null; })
+    .filter(Boolean);
+};
+// Suma lo recién mandado a lo que ya estaba mandado
+const sumarEnviados = (enviados, items, nuevos) => {
+  const env = mapaEnviados(enviados, items);
+  (nuevos||[]).forEach(n=>{ env[n._key] = (env[n._key]||0) + n.qty; });
+  return env;
+};
+// Cuántas unidades de un plato ya se mandaron
+const cuantosEnviados = (enviados, items, key) => (mapaEnviados(enviados, items)[key]||0);
+
+
+// ═══════════════════════════════════════════════════════
 // BÚSQUEDA DE CLIENTES (sin tildes, sin mayúsculas, por relevancia)
 // ═══════════════════════════════════════════════════════
 // Pasa a minúsculas y saca las tildes: "MARÍA" y "maria" quedan iguales
@@ -1159,8 +1192,13 @@ function App() {
     if(cargandoInicial) return;
     if(hayIdsRepetidos(clientesDelivery)) setClientesDelivery(prev=>repararIds(prev));
     if(hayIdsRepetidos(clientes))         setClientes(prev=>repararIds(prev));
+    // Pasar los pedidos abiertos del formato viejo de "enviados" al nuevo
+    if((mesas||[]).some(m=>Array.isArray(m.enviados)&&m.enviados.length>0))
+      setMesas(prev=>prev.map(m=>Array.isArray(m.enviados)&&m.enviados.length>0?{...m,enviados:mapaEnviados(m.enviados,m.pedidos)}:m));
+    if((pedidosDelivery||[]).some(p=>Array.isArray(p.enviados)&&p.enviados.length>0))
+      setPedidosDelivery(prev=>prev.map(p=>Array.isArray(p.enviados)&&p.enviados.length>0?{...p,enviados:mapaEnviados(p.enviados,p.items)}:p));
     // eslint-disable-next-line
-  },[cargandoInicial,clientesDelivery,clientes]);
+  },[cargandoInicial,clientesDelivery,clientes,mesas,pedidosDelivery]);
 
   // ── helpers ──────────────────────────────────────────
   const puede = sec => usuario && PERMISOS[usuario.rol]?.includes(sec);
@@ -1240,52 +1278,81 @@ function App() {
   const totalMesa = mesa => mesa.pedidos.reduce((s,p)=>s+p.precio*p.qty,0);
 
   // ── Puente de impresión automática (envía la comanda a la bandeja) ──
+  // ═══════════════════════════════════════════════════════
+  // TEXTO PARA LA IMPRESORA TÉRMICA
+  // Cada renglón puede llevar una marca al principio que le
+  // dice al Agente de Impresión cómo imprimirlo:
+  //   [TIPO]  qué clase de ticket es (para elegir impresora)
+  //   [T]     título grande y centrado
+  //   [S]     subtítulo centrado en negrita
+  //   [C]     centrado normal
+  //   [P]     centrado en letra chica
+  //   [G]     grande y en negrita (ítems de cocina)
+  //   [H]     línea divisoria de punta a punta
+  //   [LR]    izquierda|derecha  (precio alineado a la derecha)
+  //   [TT]    igual que LR pero grande (el total)
+  // Sin marca, el renglón sale normal a la izquierda.
+  // ═══════════════════════════════════════════════════════
   const construirTextoComanda = (ticket) => {
     const lineas = [];
     if(ticket.tipo==="svf"){
       // Ticket de cuenta (Sin Valor Fiscal) para el cliente
-      lineas.push(RESTAURANTE.nombre);
-      lineas.push(RESTAURANTE.direccion);
-      lineas.push(ticket.hora||"");
-      lineas.push("--------------------------------");
-      lineas.push("*** SIN VALOR FISCAL ***");
-      lineas.push("--------------------------------");
+      lineas.push("[TIPO]cuenta");
+      lineas.push(`[T]${RESTAURANTE.nombre}`);
+      lineas.push(`[C]${RESTAURANTE.direccion}`);
+      lineas.push(`[C]${[ticket.fecha,ticket.hora].filter(Boolean).join(" - ")}`);
+      lineas.push("[H]");
+      lineas.push("[S]*** SIN VALOR FISCAL ***");
+      lineas.push("[H]");
       if(ticket.esDelivery){
-        lineas.push(ticket.tipoEntrega==="buscan"?"PASA A BUSCAR":"DELIVERY");
-        lineas.push(ticket.cliente||"");
-        if(ticket.telefono) lineas.push(ticket.telefono);
+        lineas.push(`[S]${ticket.tipoEntrega==="buscan"?"PASA A BUSCAR":"DELIVERY"}`);
+        if(ticket.cliente)  lineas.push(`[C]${ticket.cliente}`);
+        if(ticket.telefono) lineas.push(`[C]${ticket.telefono}`);
       } else {
-        lineas.push(`${ticket.sector} - Mesa #${ticket.numero}`);
-        if(ticket.mozo) lineas.push(`Mozo: ${ticket.mozo}`);
+        lineas.push(`[S]${ticket.sector} - Mesa #${ticket.numero}`);
+        if(ticket.mozo) lineas.push(`[C]Mozo: ${ticket.mozo}`);
       }
-      lineas.push("--------------------------------");
+      lineas.push("[H]");
       (ticket.items||[]).forEach(i=>{
-        lineas.push(`${i.qty}x ${i.nombre}${i.guarnicionElegida?` (${i.guarnicionElegida})`:""}`);
-        lineas.push(`   ${fmtGs(i.precio*i.qty)}`);
+        const nombre = `${i.qty}x ${i.nombre}${i.guarnicionElegida?` (${i.guarnicionElegida})`:""}`;
+        lineas.push(`[LR]${nombre}|${fmtGs(i.precio*i.qty)}`);
         if(i.nota) lineas.push(`   -> ${i.nota}`);
       });
-      if(ticket.envio>0){ lineas.push("Envío"); lineas.push(`   ${fmtGs(ticket.envio)}`); }
-      lineas.push("--------------------------------");
-      lineas.push(`TOTAL: ${fmtGs(ticket.total)}`);
+      if(ticket.envio>0) lineas.push(`[LR]Envío|${fmtGs(ticket.envio)}`);
+      lineas.push("[H]");
+      lineas.push(`[TT]TOTAL|${fmtGs(ticket.total)}`);
       const frase = FRASES[Math.floor(Math.random()*FRASES.length)];
       lineas.push("");
-      lineas.push(`"${frase.texto}"`);
-      lineas.push(`- ${frase.autor}`);
+      lineas.push(`[P]"${frase.texto}"`);
+      lineas.push(`[P]- ${frase.autor}`);
     } else {
-      // Comanda de cocina/barra
-      lineas.push(ticket.esDelivery ? (ticket.tipoEntrega==="buscan"?"PASA A BUSCAR":"DELIVERY") : `${ticket.sector} - Mesa #${ticket.numero}`);
-      if(ticket.esDelivery){ lineas.push(ticket.cliente||""); if(ticket.telefono) lineas.push(ticket.telefono); }
-      if(!ticket.esDelivery && ticket.mozo) lineas.push(`Mozo: ${ticket.mozo}`);
-      lineas.push(ticket.hora||"");
-      lineas.push("--------------------------------");
+      // Comanda de cocina/barra — letra grande, se lee de lejos
+      lineas.push(`[TIPO]${ticket.esDelivery?"comanda-delivery":"comanda-mesa"}`);
+      if(ticket.esDelivery){
+        lineas.push(`[T]${ticket.tipoEntrega==="buscan"?"RETIRO":"DELIVERY"}`);
+        if(ticket.cliente)  lineas.push(`[S]${ticket.cliente}`);
+        if(ticket.telefono) lineas.push(`[C]${ticket.telefono}`);
+      } else {
+        lineas.push(`[T]MESA ${ticket.numero}`);
+        lineas.push(`[C]${ticket.sector}`);
+        if(ticket.mozo) lineas.push(`[C]Mozo: ${ticket.mozo}`);
+      }
+      lineas.push(`[C]${ticket.hora||""}`);
+      lineas.push("[H]");
       if(ticket.itemsCocina?.length){
-        lineas.push("COCINA");
-        ticket.itemsCocina.forEach(i=>lineas.push(`${fmtQty(i)}${i.nombre}`));
+        lineas.push("[S]COCINA");
+        ticket.itemsCocina.forEach(i=>{
+          lineas.push(`[G]${fmtQty(i)}${i.nombre}${i.guarnicionElegida?` (${i.guarnicionElegida})`:""}`);
+          if(i.nota) lineas.push(`   -> ${i.nota}`);
+        });
       }
       if(ticket.itemsBarra?.length){
         lineas.push("");
-        lineas.push("BARRA");
-        ticket.itemsBarra.forEach(i=>lineas.push(`${i.qty}x ${i.nombre}`));
+        lineas.push("[S]BARRA");
+        ticket.itemsBarra.forEach(i=>{
+          lineas.push(`[G]${i.qty}x ${i.nombre}`);
+          if(i.nota) lineas.push(`   -> ${i.nota}`);
+        });
       }
       if(ticket.notas) lineas.push(`Nota: ${ticket.notas}`);
     }
@@ -1299,17 +1366,15 @@ function App() {
 
   // Ticket incremental — solo ítems NO enviados aún
   const enviarCocina = (mesa) => {
-    const yaEnviados = new Set(mesa.enviados||[]);
-    const nuevos = mesa.pedidos.filter(p=>!yaEnviados.has(p._key));
+    const nuevos = itemsPendientes(mesa.pedidos, mesa.enviados);
     if(!nuevos.length){showToast("No hay ítems nuevos para enviar","warn");return;}
     const itemsCocina = nuevos.filter(p=>p.tipo!=="bebida");
     const itemsBarra  = nuevos.filter(p=>p.tipo==="bebida");
     const ticketComanda = {tipo:"mesa",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,itemsCocina,itemsBarra,hora:ahora()};
     setTicketModal(ticketComanda);
     enviarAImpresora(ticketComanda);
-    // Marcar como enviados
-    const nuevasKeys = nuevos.map(p=>p._key);
-    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,enviados:[...(m.enviados||[]),...nuevasKeys]}:m));
+    // Marcar como enviados (sumando cantidades)
+    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,enviados:sumarEnviados(m.enviados,m.pedidos,nuevos)}:m));
     registrarLog("Pedido a cocina",`Mesa ${mesa.sector} #${mesa.numero} · ${nuevos.length} ítems`);
   };
 
@@ -1553,16 +1618,14 @@ function App() {
   };
 
   const enviarCocinaDelivery = (pedido) => {
-    const yaEnviados=new Set(pedido.enviados||[]);
-    const nuevos=pedido.items.filter(p=>!yaEnviados.has(p._key));
+    const nuevos=itemsPendientes(pedido.items, pedido.enviados);
     if(!nuevos.length){showToast("No hay ítems nuevos","warn");return;}
     const itemsCocina=nuevos.filter(p=>p.tipo!=="bebida");
     const itemsBarra=nuevos.filter(p=>p.tipo==="bebida");
     const ticketComandaDelivery = {tipo:pedido.tipoEntrega||"delivery",cliente:pedido.cliente,telefono:pedido.telefono,itemsCocina,itemsBarra,hora:ahora(),esDelivery:true,notas:pedido.notas||""};
     setTicketModal(ticketComandaDelivery);
     enviarAImpresora(ticketComandaDelivery);
-    const nuevasKeys=nuevos.map(p=>p._key);
-    setPedidosDelivery(prev=>prev.map(p=>p.id===pedido.id?{...p,enviados:[...(p.enviados||[]),...nuevasKeys]}:p));
+    setPedidosDelivery(prev=>prev.map(p=>p.id===pedido.id?{...p,enviados:sumarEnviados(p.enviados,p.items,nuevos)}:p));
     registrarLog("Pedido cocina delivery",pedido.cliente);
   };
 
@@ -2059,7 +2122,7 @@ function App() {
                   const total=pedido.items.reduce((s,i)=>s+i.precio*i.qty,0)+envio;
                   const activo=deliveryActivo===pedido.id;
                   const ec={pendiente:"#f97316","en preparación":"#3b82f6","en camino":"#a855f7",entregado:"#22c55e"};
-                  const hayNuevos=pedido.items.some(i=>!(pedido.enviados||[]).includes(i._key));
+                  const hayNuevos=itemsPendientes(pedido.items,pedido.enviados).length>0;
                   return(
                     <div key={pedido.id} style={{background:activo?"#1a2e1a":"#1a1d27",border:`2px solid ${activo?"#22c55e":"#2a2d3a"}`,borderRadius:13,padding:14}}>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
@@ -2101,11 +2164,12 @@ function App() {
                       {pedido.items.length>0&&(
                         <div style={{marginBottom:8,display:"flex",flexDirection:"column",gap:4}}>
                           {pedido.items.map(i=>{
-                            const enviado=(pedido.enviados||[]).includes(i._key);
+                            const yaEnv=cuantosEnviados(pedido.enviados,pedido.items,i._key);
+                            const enviado=yaEnv>=i.qty;
                             return(
                               <div key={i._key} style={{display:"flex",alignItems:"center",gap:5,opacity:enviado?0.55:1}}>
                                 <div style={{flex:1,minWidth:0}}>
-                                  <div style={{fontSize:11,color:"#e8e8e8"}}>{i.nombre}{i.guarnicionElegida?` (${i.guarnicionElegida})`:""}{enviado&&<span style={{color:"#22c55e",fontSize:9,marginLeft:4}}>✓enviado</span>}</div>
+                                  <div style={{fontSize:11,color:"#e8e8e8"}}>{i.nombre}{i.guarnicionElegida?` (${i.guarnicionElegida})`:""}{enviado?<span style={{color:"#22c55e",fontSize:9,marginLeft:4}}>✓enviado</span>:yaEnv>0&&<span style={{color:"#f97316",fontSize:9,marginLeft:4}}>✓{yaEnv} de {i.qty} · falta {i.qty-yaEnv}</span>}</div>
                                   {i.nota&&<div style={{fontSize:9,color:"#a855f7"}}>📝 {i.nota}</div>}
                                 </div>
                                 <button onClick={()=>quitarItemDelivery(pedido.id,i._key)} style={{background:"#2a2d3a",border:"none",color:"#e8e8e8",width:20,height:20,borderRadius:5,cursor:"pointer",fontSize:12}}>−</button>
@@ -2933,7 +2997,7 @@ function App() {
 // DETALLE MESA
 // ═══════════════════════════════════════════════════════
 function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busqueda, setBusqueda, todasCategorias, totalMesa, fmtGs, sectorNombre, sectorColor, onVolver, onAgregarItem, onQuitarItem, onEnviarCocina, onPedirCuenta, onCobrar, puedeCobrar }) {
-  const hayNuevos = mesa.pedidos.some(p=>!(mesa.enviados||[]).includes(p._key));
+  const hayNuevos = itemsPendientes(mesa.pedidos, mesa.enviados).length>0;
   return(
     <div>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"}}>
@@ -2972,10 +3036,11 @@ function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busq
           {mesa.pedidos.length===0?(<p style={{color:"#4b5563",fontSize:12,textAlign:"center",marginTop:28}}>Seleccioná ítems</p>):(
             <>
               {mesa.pedidos.map(p=>{
-                const enviado=(mesa.enviados||[]).includes(p._key);
+                const yaEnv=cuantosEnviados(mesa.enviados,mesa.pedidos,p._key);
+                const enviado=yaEnv>=p.qty;
                 return(<div key={p._key} style={{display:"flex",alignItems:"flex-start",gap:5,marginBottom:8,opacity:enviado?0.5:1}}>
                   <div style={{flex:1}}>
-                    <div style={{fontSize:11,fontWeight:600}}>{p.nombre}{enviado&&<span style={{color:"#22c55e",fontSize:9,marginLeft:4}}>✓enviado</span>}</div>
+                    <div style={{fontSize:11,fontWeight:600}}>{p.nombre}{enviado?<span style={{color:"#22c55e",fontSize:9,marginLeft:4}}>✓enviado</span>:yaEnv>0&&<span style={{color:"#f97316",fontSize:9,marginLeft:4}}>✓{yaEnv} de {p.qty} · falta {p.qty-yaEnv}</span>}</div>
                     {p.guarnicionElegida&&<div style={{fontSize:9,color:"#22c55e"}}>+ {p.guarnicionElegida}</div>}
                     {p.nota&&<div style={{fontSize:9,color:"#a855f7"}}>📝 {p.nota}</div>}
                     <div style={{fontSize:10,color:"#9ca3af"}}>{fmtGs(p.precio)} c/u</div>
