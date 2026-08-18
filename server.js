@@ -4,6 +4,23 @@
 // información del restaurante en un solo lugar y se la
 // reparte a todos los dispositivos conectados (notebook,
 // tablets, celulares).
+//
+// CAMBIOS respecto a la versión anterior (servr.js):
+//  1. Los guardados ya no reemplazan un pedido/mesa entero:
+//     cada dispositivo manda solo lo que efectivamente tocó
+//     ("dirty") y el servidor lo combina con lo que ya había,
+//     sin pisar lo que otro dispositivo guardó mientras tanto.
+//     Ver aplicarCambios() más abajo.
+//  2. Los datos se guardan en DATA_DIR (configurable por variable
+//     de entorno). Si en Render se monta un Disco persistente ahí,
+//     los pedidos sobreviven a reinicios y redeploys. Sin esa
+//     variable, se guarda en la carpeta del proyecto (sirve para
+//     probar en la compu, pero en Render se perdería igual).
+//  3. Escritura atómica (archivo temporal + rename) para que un
+//     corte de luz a mitad de un guardado no deje el archivo roto.
+//  4. Auditoría: cada guardado deja un renglón en auditoria.log con
+//     quién, cuándo y qué cambió.
+//  5. Copias de respaldo periódicas por si hay que volver atrás a mano.
 // ═══════════════════════════════════════════════════════
 const express = require("express");
 const path = require("path");
@@ -11,7 +28,21 @@ const fs = require("fs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DATA_FILE = path.join(__dirname, "data.json");
+
+// ── Dónde se guardan los datos ──────────────────────────
+// IMPORTANTE: en Render, un "Web Service" sin Disco agregado NO
+// conserva archivos entre reinicios/redeploys, sin importar el plan
+// que se pague. Para que esto sea permanente hay que:
+//   1. En el dashboard de Render → el servicio → "Disks" → Add Disk.
+//   2. Mount Path, por ejemplo: /data
+//   3. Variable de entorno DATA_DIR = /data
+// Instrucciones completas en README-DESPLIEGUE.md.
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+const DATA_FILE = path.join(DATA_DIR, "data.json");
+const AUDIT_FILE = path.join(DATA_DIR, "auditoria.log");
+const BACKUP_DIR = path.join(DATA_DIR, "backups");
+if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 app.use(express.json({ limit: "5mb" }));
 
@@ -24,95 +55,144 @@ app.get("/", (req, res) => {
 function cargarEstado() {
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf8");
-    const cargado = JSON.parse(raw);
-    // revPorClave puede no existir todavia en archivos guardados por
-    // una version anterior del servidor: arranca vacio, sin problema.
-    if (!cargado.revPorClave) cargado.revPorClave = {};
-    return cargado;
+    const est = JSON.parse(raw);
+    if (!est || typeof est !== "object") throw new Error("formato inválido");
+    if (!est.data || typeof est.data !== "object") est.data = {};
+    if (typeof est.rev !== "number") est.rev = 0;
+    return est;
   } catch (e) {
-    return { rev: 0, data: {}, revPorClave: {} };
+    return { rev: 0, data: {} };
   }
 }
 
+// Escritura atómica: primero a un archivo temporal, y recién cuando
+// terminó bien se reemplaza el archivo real (rename es una operación
+// instantánea). Así, si la PC se apaga o Render reinicia el proceso a
+// mitad de un guardado, nunca queda un data.json a medio escribir.
 function guardarEstado(estado) {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(estado));
+    const tmp = DATA_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(estado));
+    fs.renameSync(tmp, DATA_FILE);
   } catch (e) {
     console.error("No se pudo guardar en disco:", e.message);
   }
 }
 
+// Cada 100 guardados dejamos una copia de respaldo con fecha, por si
+// algún día hay que volver atrás a mano. Se conservan como máximo 20.
+let guardadosDesdeBackup = 0;
+function backupPeriodico(estado) {
+  guardadosDesdeBackup++;
+  if (guardadosDesdeBackup < 100) return;
+  guardadosDesdeBackup = 0;
+  try {
+    const nombre = `data.${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    fs.writeFileSync(path.join(BACKUP_DIR, nombre), JSON.stringify(estado));
+    const viejos = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith("data.")).sort();
+    while (viejos.length > 20) fs.unlinkSync(path.join(BACKUP_DIR, viejos.shift()));
+  } catch (e) {
+    console.error("No se pudo hacer backup:", e.message);
+  }
+}
+
+function registrarAuditoria(entrada) {
+  try {
+    fs.appendFileSync(AUDIT_FILE, JSON.stringify(entrada) + "\n");
+  } catch (e) {
+    // la auditoría nunca debe tumbar un guardado real
+  }
+}
+
 let estado = cargarEstado();
+
+// ═══════════════════════════════════════════════════════
+// EL CORAZÓN DEL ARREGLO
+// En vez de que cada guardado reemplace un array entero (mesas,
+// pedidosDelivery, clientes, etc.), el cliente manda SOLO los ítems
+// que efectivamente creó/modificó (upsert) o borró explícitamente
+// (del), identificados por su "id". Acá se combinan con lo que ya
+// había, así un dispositivo nunca pisa lo que otro guardó y todavía
+// no vio.
+//
+// Los ítems que un dispositivo no menciona quedan exactamente como
+// estaban: un pedido no puede desaparecer si nadie mandó su id en
+// "del".
+// ═══════════════════════════════════════════════════════
+function aplicarCambios(dataPrevia, dirty, scalars) {
+  const data = { ...dataPrevia };
+  const resumen = [];
+
+  for (const [clave, cambios] of Object.entries(dirty || {})) {
+    if (!cambios || typeof cambios !== "object") continue;
+    const actual = Array.isArray(data[clave]) ? data[clave] : [];
+    const porId = new Map(actual.filter(it => it && it.id !== undefined).map(it => [it.id, it]));
+    const upsert = Array.isArray(cambios.upsert) ? cambios.upsert : [];
+    const del = Array.isArray(cambios.del) ? cambios.del : [];
+    upsert.forEach(it => {
+      if (it && it.id !== undefined) porId.set(it.id, it);
+    });
+    del.forEach(id => porId.delete(id));
+    let fusion = Array.from(porId.values());
+    // Si todos los ids son numéricos (Date.now(), como usa casi todo
+    // el sistema), lo más nuevo primero — así listas como "ventas" o
+    // "log" no cambian de orden al fusionarse.
+    if (fusion.length && fusion.every(it => typeof it.id === "number")) {
+      fusion = fusion.sort((a, b) => b.id - a.id);
+    }
+    data[clave] = fusion;
+    if (upsert.length || del.length) {
+      resumen.push(`${clave}: +${upsert.length}/-${del.length}`);
+    }
+  }
+
+  for (const [clave, valor] of Object.entries(scalars || {})) {
+    data[clave] = valor;
+    resumen.push(`${clave}: actualizado`);
+  }
+
+  return { data, resumen };
+}
 
 // ── El sistema pide los datos compartidos ───────────────
 app.get("/api/state", (req, res) => {
   res.json(estado);
 });
 
-// ═══════════════════════════════════════════════════════
-// EL SISTEMA GUARDA CAMBIOS NUEVOS
-//
-// PROBLEMA QUE ESTO RESUELVE (agosto 2026 — "se borran mesas"):
-// La app manda SIEMPRE el paquete completo de las 17 claves
-// compartidas (mesas, pedidosDelivery, clientes, etc.) cada vez
-// que cambia UNA sola cosa, aunque las otras 16 no se hayan
-// tocado en ese aparato. Si dos dispositivos guardan casi al
-// mismo tiempo, el segundo guardado traía una copia VIEJA de
-// las claves que no cambió en ESE aparato (porque hacia rato
-// que no se actualizaba con lo del otro aparato), y esa copia
-// vieja pisaba por completo lo que el primer aparato acababa de
-// guardar. Por eso desaparecian mesas: no era que el codigo del
-// PowerShell ni la impresora tuvieran nada que ver, era este
-// "pisado" de datos en el servidor.
-//
-// SOLUCION: cada clave lleva su propio numero de revision
-// (revPorClave). Cuando un aparato guarda, viene con el "rev"
-// del servidor que tenia la ULTIMA VEZ que se actualizo (lo
-// manda desde hace tiempo, pero antes el servidor lo ignoraba).
-// Para cada clave del paquete:
-//   - Si nadie cambio esa clave despues de que este aparato la
-//     vio por ultima vez -> se guarda tal cual (caso normal).
-//   - Si OTRO aparato ya cambio esa clave mas reciente que lo
-//     que este aparato vio -> se ignora la copia vieja de ESA
-//     clave nada mas (las demas claves del mismo paquete se
-//     guardan igual si estan al dia). Asi nunca se pisa un
-//     cambio mas nuevo con uno mas viejo.
-// ═══════════════════════════════════════════════════════
+// ── El sistema guarda cambios nuevos ────────────────────
 app.post("/api/state", (req, res) => {
-  const revCliente = Number(req.body && req.body.rev) || 0;
-  const nuevaData = (req.body && req.body.data) || {};
-  const revPorClave = { ...(estado.revPorClave || {}) };
-  const dataFinal = { ...estado.data };
-  const nuevoRev = estado.rev + 1;
-  let huboCambios = false;
-  const ignoradasPorConflicto = [];
+  const body = req.body || {};
+  const origen = body.origen || {};
+  let resumen = [];
 
-  for (const clave of Object.keys(nuevaData)) {
-    const revDeEstaClave = revPorClave[clave] || 0;
-    if (revDeEstaClave <= revCliente) {
-      // Este aparato tenia la version mas nueva de esta clave: se confia en lo que manda.
-      const valorNuevo = nuevaData[clave];
-      if (JSON.stringify(dataFinal[clave]) !== JSON.stringify(valorNuevo)) {
-        dataFinal[clave] = valorNuevo;
-        revPorClave[clave] = nuevoRev;
-        huboCambios = true;
-      }
-    } else {
-      // Otro aparato ya actualizo esta clave despues de que este la vio por
-      // ultima vez: no se pisa. Se descarta solo la copia vieja de esta clave.
-      ignoradasPorConflicto.push(clave);
-    }
+  if (body.dirty || body.scalars) {
+    // Protocolo nuevo: el cliente manda solo lo que efectivamente cambió.
+    const r = aplicarCambios(estado.data, body.dirty, body.scalars);
+    estado = { rev: estado.rev + 1, data: r.data };
+    resumen = r.resumen;
+  } else if (body.data) {
+    // Protocolo viejo (compatibilidad hacia atrás): un dispositivo con
+    // la pantalla vieja todavía en el navegador (sin refrescar) manda
+    // el bloque entero. Se acepta para no cortarle el servicio a nadie,
+    // pero puede pisar cambios de otro dispositivo — por eso conviene
+    // que, después de este despliegue, cada tablet/PC se refresque una
+    // vez (F5 o cerrar y volver a abrir el navegador).
+    console.warn("[sync] Aviso: un dispositivo mandó el protocolo viejo (pantalla sin refrescar).");
+    estado = { rev: estado.rev + 1, data: { ...estado.data, ...body.data } };
+    resumen = ["(protocolo viejo: reemplazo completo — conviene refrescar ese dispositivo)"];
+  } else {
+    return res.status(400).json({ error: "cuerpo inválido" });
   }
 
-  if (huboCambios) {
-    estado = { rev: nuevoRev, data: dataFinal, revPorClave };
-    guardarEstado(estado);
-  }
-
-  if (ignoradasPorConflicto.length > 0) {
-    console.log(`[sync] Se ignoro una copia vieja de: ${ignoradasPorConflicto.join(", ")} (otro aparato ya la habia actualizado)`);
-  }
-
+  guardarEstado(estado);
+  backupPeriodico(estado);
+  registrarAuditoria({
+    hora: new Date().toISOString(),
+    rev: estado.rev,
+    usuario: origen.usuario || null,
+    rol: origen.rol || null,
+    cambios: resumen,
+  });
   res.json(estado);
 });
 
@@ -127,7 +207,6 @@ app.post("/api/state", (req, res) => {
 let colaImpresion = [];
 let proximoJobId = 1;
 
-// El sistema deja una comanda en el buzón
 app.post("/api/print-jobs", (req, res) => {
   const texto = (req.body && req.body.texto) || "";
   if (!String(texto).trim()) return res.status(400).json({ error: "texto vacío" });
@@ -137,12 +216,10 @@ app.post("/api/print-jobs", (req, res) => {
   res.json({ ok: true, id: job.id });
 });
 
-// El Agente pregunta qué hay para imprimir
 app.get("/api/print-jobs", (req, res) => {
   res.json({ jobs: colaImpresion });
 });
 
-// El Agente avisa que ya imprimió una comanda
 app.post("/api/print-jobs/:id/done", (req, res) => {
   const id = Number(req.params.id);
   colaImpresion = colaImpresion.filter(j => j.id !== id);
@@ -152,6 +229,10 @@ app.post("/api/print-jobs/:id/done", (req, res) => {
 // ── Para saber si el servidor está vivo ─────────────────
 app.get("/health", (req, res) => res.send("ok"));
 
-app.listen(PORT, () => {
-  console.log(`Sistema Gourmet escuchando en el puerto ${PORT}`);
-});
+module.exports = { app, aplicarCambios, DATA_FILE };
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Sistema Gourmet escuchando en el puerto ${PORT} (datos en ${DATA_FILE})`);
+  });
+}

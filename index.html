@@ -1093,29 +1093,113 @@ function App() {
   // SINCRONIZACIÓN CON EL SERVIDOR COMPARTIDO
   // Todo lo que está en CLAVES_COMPARTIDAS se guarda en el
   // servidor y se reparte automáticamente a todos los dispositivos.
+  //
+  // CÓMO EVITAMOS QUE SE PISEN LOS PEDIDOS ENTRE DISPOSITIVOS
+  // (arreglo de agosto 2026 — antes acá se perdían pedidos):
+  //  1. Al guardar, cada dispositivo NO manda la lista entera de
+  //     mesas/pedidos/clientes: manda solo los ítems que él mismo
+  //     tocó desde el último guardado ("dirty"). El servidor los
+  //     combina con lo que ya tenía, así nunca pisa lo que guardó
+  //     otro dispositivo mientras tanto.
+  //  2. Cuando llega una actualización de otro dispositivo (cada 4
+  //     segundos), si ESTE dispositivo tiene un cambio propio sin
+  //     guardar todavía (por ejemplo, el mozo tocó "agregar" hace
+  //     medio segundo), esa edición local se respeta y no se pisa
+  //     con lo que vino del servidor — antes esto SÍ pasaba y era
+  //     la forma más común en que un pedido recién cargado
+  //     "desaparecía" solo.
+  //  Para las dos cosas usamos baseSincronizadaRef: la última foto
+  //  de cada lista que sabemos que el servidor ya tiene confirmada.
   // ═══════════════════════════════════════════════════════
   const [conectado, setConectado] = useState(false);
   const [cargandoInicial, setCargandoInicial] = useState(true);
   const serverRevRef = useRef(0);
   const applyingRemoteRef = useRef(false);
   const saveTimeoutRef = useRef(null);
+  const baseSincronizadaRef = useRef({});
 
   const CLAVES_COMPARTIDAS = ["mesas","carta","ventas","log","pedidosDelivery","enviosDelivery","clientes","clientesDelivery","insumos","empaques","limpieza","compras","arqueoAbierto","usuarios","umbralArqueo","telefonoAlertaArqueo","historialTickets"];
   const settersCompartidos = {mesas:setMesas,carta:setCarta,ventas:setVentas,log:setLog,pedidosDelivery:setPedidosDelivery,enviosDelivery:setEnviosDelivery,clientes:setClientes,clientesDelivery:setClientesDelivery,insumos:setInsumos,empaques:setEmpaques,limpieza:setLimpieza,compras:setCompras,arqueoAbierto:setArqueoAbierto,usuarios:setUsuarios,umbralArqueo:setUmbralArqueo,telefonoAlertaArqueo:setTelefonoAlertaArqueo,historialTickets:setHistorialTickets};
   const valoresCompartidos = {mesas,carta,ventas,log,pedidosDelivery,enviosDelivery,clientes,clientesDelivery,insumos,empaques,limpieza,compras,arqueoAbierto,usuarios,umbralArqueo,telefonoAlertaArqueo,historialTickets};
+
+  // Copia siempre-actualizada de valoresCompartidos, para poder leer el
+  // estado más fresco desde el intervalo de 4s sin tener que reiniciarlo
+  // en cada cambio (eso haría que el "cada 4 segundos" nunca se cumpla).
+  const valoresCompartidosRef = useRef(valoresCompartidos);
+  useEffect(() => { valoresCompartidosRef.current = valoresCompartidos; });
+
+  // ¿Es una lista de objetos con "id" (mesas, pedidos, clientes, etc.)?
+  // A esas las fusionamos ítem por ítem. A lo demás (un número, un
+  // objeto suelto como arqueoAbierto) lo tratamos como antes: se
+  // reemplaza entero si cambió.
+  const esListaConId = (v) => Array.isArray(v) && v.every(it => it && typeof it==="object" && it.id!==undefined);
+
+  // Arma { upsert, del } comparando la lista actual contra la última
+  // base conocida. Un ítem "cambió" si su referencia es distinta a la
+  // que había en la base — como todo el sistema actualiza el estado de
+  // forma inmutable (map/spread), un ítem no tocado conserva siempre la
+  // misma referencia, así que esto detecta ediciones reales sin falsos
+  // positivos.
+  const diffLista = (actual, base) => {
+    const baseArr = Array.isArray(base) ? base : [];
+    const basePorId = new Map(baseArr.map(it=>[it.id,it]));
+    const idsActuales = new Set();
+    const upsert = [];
+    (actual||[]).forEach(it=>{
+      if(!it || it.id===undefined) return;
+      idsActuales.add(it.id);
+      if(basePorId.get(it.id)!==it) upsert.push(it);
+    });
+    const del = baseArr.filter(it=>it && it.id!==undefined && !idsActuales.has(it.id)).map(it=>it.id);
+    return {upsert, del};
+  };
+
+  // Combina lo que acaba de llegar del servidor con lo que este mismo
+  // dispositivo tiene en pantalla. Si un ítem lo estamos editando acá
+  // AHORA (todavía no se guardó), lo conservamos tal cual en vez de
+  // pisarlo con la versión del servidor — eso es lo que evitaba que un
+  // pedido recién tocado se borrara solo por la actualización de los 4s.
+  const fusionarListaEntrante = (local, base, remoto) => {
+    const baseArr = Array.isArray(base) ? base : [];
+    const basePorId = new Map(baseArr.map(it=>[it.id,it]));
+    const localPorId = new Map((local||[]).filter(it=>it&&it.id!==undefined).map(it=>[it.id,it]));
+    const resultado = []; const vistos = new Set();
+    (remoto||[]).forEach(itRemoto=>{
+      if(!itRemoto || itRemoto.id===undefined) return;
+      vistos.add(itRemoto.id);
+      const itLocal = localPorId.get(itRemoto.id);
+      const itBase = basePorId.get(itRemoto.id);
+      // Hay una edición local sin guardar todavía (referencia distinta
+      // a la última base) -> se respeta esa edición, no se pisa.
+      if(itLocal!==undefined && itLocal!==itBase) resultado.push(itLocal);
+      else resultado.push(itRemoto);
+    });
+    (local||[]).forEach(itLocal=>{
+      if(!itLocal || itLocal.id===undefined || vistos.has(itLocal.id)) return;
+      const itBase = basePorId.get(itLocal.id);
+      // Ítem nuevo agregado acá y todavía no confirmado por el servidor.
+      if(itLocal!==itBase) resultado.push(itLocal);
+      // Si itLocal===itBase y no vino en "remoto", es que otro
+      // dispositivo lo borró intencionalmente: se deja afuera.
+    });
+    return resultado;
+  };
 
   // Carga inicial: trae lo que ya está guardado en el servidor
   useEffect(() => {
     fetch("/api/state").then(r=>r.json()).then(res=>{
       applyingRemoteRef.current = true;
       const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
+      const nuevaBase = {};
       CLAVES_COMPARTIDAS.forEach(k=>{
         if(k==="carta"){
-          if(!menuDesactualizado && res.data.carta!==undefined) setCarta(res.data.carta);
+          if(!menuDesactualizado && res.data.carta!==undefined){ setCarta(res.data.carta); nuevaBase.carta=res.data.carta; }
         } else if(res.data[k]!==undefined){
           settersCompartidos[k](res.data[k]);
+          nuevaBase[k]=res.data[k];
         }
       });
+      baseSincronizadaRef.current = nuevaBase;
       serverRevRef.current = res.rev;
       setConectado(true);
       setCargandoInicial(false);
@@ -1123,14 +1207,40 @@ function App() {
     }).catch(()=>{ setConectado(false); setCargandoInicial(false); });
   },[]);
 
-  // Guarda cambios locales en el servidor (con una pequeña espera para no saturar)
+  // Guarda cambios locales en el servidor (con una pequeña espera para
+  // no saturar). Manda solo lo que cambió desde la última sincronización.
   useEffect(() => {
     if(cargandoInicial||applyingRemoteRef.current) return;
     if(saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = setTimeout(()=>{
-      const payload={menuVersion:MENU_VERSION}; CLAVES_COMPARTIDAS.forEach(k=>payload[k]=valoresCompartidos[k]);
-      fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rev:serverRevRef.current,data:payload})})
-        .then(r=>r.json()).then(res=>{serverRevRef.current=res.rev; setConectado(true);})
+      const base = baseSincronizadaRef.current||{};
+      const dirty = {}; const scalars = {};
+      CLAVES_COMPARTIDAS.forEach(k=>{
+        const actual = valoresCompartidos[k];
+        if(k==="carta"){ scalars.carta = actual; return; }
+        if(esListaConId(actual) || esListaConId(base[k])){
+          const {upsert, del} = diffLista(actual, base[k]);
+          if(upsert.length || del.length) dirty[k] = {upsert, del};
+        } else if(JSON.stringify(actual)!==JSON.stringify(base[k])){
+          scalars[k] = actual;
+        }
+      });
+      scalars.menuVersion = MENU_VERSION;
+
+      // Nada relevante cambió (puede pasar justo después de aplicar
+      // datos remotos) -> no gastamos una llamada al servidor.
+      if(Object.keys(dirty).length===0 && Object.keys(scalars).length<=1) return;
+
+      const origen = {usuario: usuario?.nombre||null, rol: usuario?.rol||null};
+      fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
+        .then(r=>r.json()).then(res=>{
+          serverRevRef.current=res.rev; setConectado(true);
+          // Esto es lo último que sabemos que el servidor ya tiene: pasa
+          // a ser la nueva base de comparación para el próximo guardado.
+          const nuevaBase = {...base};
+          CLAVES_COMPARTIDAS.forEach(k=>{ nuevaBase[k]=valoresCompartidos[k]; });
+          baseSincronizadaRef.current = nuevaBase;
+        })
         .catch(()=>setConectado(false));
     },700);
     return ()=>clearTimeout(saveTimeoutRef.current);
@@ -1147,13 +1257,23 @@ function App() {
         if(res.rev>serverRevRef.current){
           applyingRemoteRef.current=true;
           const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
+          const base = baseSincronizadaRef.current||{};
+          const actuales = valoresCompartidosRef.current;
+          const nuevaBase = {...base};
           CLAVES_COMPARTIDAS.forEach(k=>{
             if(k==="carta"){
-              if(!menuDesactualizado && res.data.carta!==undefined) setCarta(res.data.carta);
-            } else if(res.data[k]!==undefined){
+              if(!menuDesactualizado && res.data.carta!==undefined){ setCarta(res.data.carta); nuevaBase.carta=res.data.carta; }
+              return;
+            }
+            if(res.data[k]===undefined) return;
+            if(esListaConId(res.data[k]) || esListaConId(actuales[k])){
+              settersCompartidos[k](fusionarListaEntrante(actuales[k], base[k], res.data[k]));
+            } else {
               settersCompartidos[k](res.data[k]);
             }
+            nuevaBase[k]=res.data[k];
           });
+          baseSincronizadaRef.current = nuevaBase;
           serverRevRef.current=res.rev;
           setTimeout(()=>{applyingRemoteRef.current=false;},50);
         }
@@ -1161,6 +1281,7 @@ function App() {
       }).catch(()=>setConectado(false));
     },4000);
     return ()=>clearInterval(t);
+    // eslint-disable-next-line
   },[]);
 
   // ═══════════════════════════════════════════════════════

@@ -1,14 +1,14 @@
 {
-  "name": "sistema-gourmet",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Sistema de gestion para El Gourmet",
+  "name": "sistema-gourmet-server",
+  "version": "2.0.0",
+  "description": "Servidor del Sistema Gourmet (El Gourmet) — guardado con fusión por ítem para que los pedidos no se pisen entre dispositivos.",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/sync.test.js && node test/servidor.test.js"
   },
   "dependencies": {
     "express": "^4.19.2"
