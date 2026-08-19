@@ -90,8 +90,8 @@ const USUARIOS = [
   { id:1, nombre:"Raúl",   usuario:"dueno",    pin:"1234", rol:"dueno"   },
   { id:2, nombre:"Claudia",usuario:"claudia",  pin:"2222", rol:"dueno"   },
   { id:3, nombre:"Cajera", usuario:"cajera",   pin:"3333", rol:"cajero"  },
-  { id:4, nombre:"Mozo 1", usuario:"mozo1",    pin:"4444", rol:"mozo"    },
-  { id:5, nombre:"Mozo 2", usuario:"mozo2",    pin:"5555", rol:"mozo"    },
+  { id:4, nombre:"Carolina", usuario:"mozo1",    pin:"4444", rol:"mozo"    },
+  { id:5, nombre:"Mario",    usuario:"mozo2",    pin:"5555", rol:"mozo"    },
   { id:6, nombre:"Delivery",usuario:"delivery",pin:"6666", rol:"delivery"},
   { id:7, nombre:"Auxiliar",usuario:"auxiliar",pin:"7777", rol:"auxiliar"},
 ];
@@ -1080,6 +1080,8 @@ function App() {
 
   const [modalCambiarPin, setModalCambiarPin] = useState(null);
   const [pinForm,         setPinForm]         = useState({actual:"",nuevo:"",confirmar:""});
+  const [modalCambiarNombre, setModalCambiarNombre] = useState(null);
+  const [nombreForm,         setNombreForm]         = useState("");
 
   const [arqueoAbierto, setArqueoAbierto] = useState(null);
   const [modalArqueo,   setModalArqueo]   = useState(false);
@@ -1367,6 +1369,16 @@ function App() {
     showToast("PIN actualizado correctamente");
   };
 
+  const cambiarNombre = () => {
+    if (!nombreForm.trim()){showToast("Escribí un nombre","warn");return;}
+    const u = modalCambiarNombre;
+    const nombreViejo = u.nombre;
+    setUsuarios(prev=>prev.map(uu=>uu.id===u.id?{...uu,nombre:nombreForm.trim()}:uu));
+    registrarLog("Nombre cambiado",`${nombreViejo} → ${nombreForm.trim()}`);
+    setModalCambiarNombre(null);setNombreForm("");
+    showToast("Nombre actualizado correctamente");
+  };
+
   // ── Mesas ─────────────────────────────────────────────
   const abrirMesa = (mesa,comensales,mozo) => {
     setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"ocupada",hora:ahora(),comensales,mozo,pedidos:[],enviados:[]}:m));
@@ -1482,7 +1494,12 @@ function App() {
 
   const enviarAImpresora = (ticket) => {
     const texto = construirTextoComanda(ticket);
-    fetch("/api/print-jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({texto})}).catch(()=>{});
+    // Mandamos también el rol de quien pidió la impresión (mozo, cajero,
+    // dueño...) para que el Agente de Impresión sepa a qué impresora
+    // mandarlo: si pide un mozo va a la de mozos (WiFi), si pide desde
+    // caja/dueño va a la de la PC (USB).
+    const origen = usuario?.rol || "";
+    fetch("/api/print-jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({texto,origen})}).catch(()=>{});
   };
 
   // Ticket incremental — solo ítems NO enviados aún
@@ -3081,7 +3098,10 @@ function App() {
                       <div style={{fontSize:11,color:ROL_COLOR[u.rol],fontWeight:600,textTransform:"uppercase"}}>{u.rol}</div>
                       <div style={{fontSize:11,color:"#6b7280",marginTop:2}}>Usuario: <b style={{color:"#e8e8e8"}}>{u.usuario}</b></div>
                     </div>
-                    <button onClick={()=>setModalCambiarPin(u)} style={{background:"#2a2d3a",border:"1px solid #f97316",color:"#f97316",borderRadius:8,padding:"7px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🔑 Cambiar PIN</button>
+                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                      <button onClick={()=>setModalCambiarPin(u)} style={{background:"#2a2d3a",border:"1px solid #f97316",color:"#f97316",borderRadius:8,padding:"7px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🔑 Cambiar PIN</button>
+                      <button onClick={()=>{setModalCambiarNombre(u);setNombreForm(u.nombre);}} style={{background:"#2a2d3a",border:"1px solid #6b7280",color:"#e8e8e8",borderRadius:8,padding:"7px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>✏️ Cambiar nombre</button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -3101,6 +3121,20 @@ function App() {
             <div style={{display:"flex",gap:8,marginTop:6}}>
               <button onClick={()=>setModalCambiarPin(null)} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:8,padding:10,cursor:"pointer"}}>Cancelar</button>
               <button onClick={cambiarPin} style={{flex:1,background:"#f97316",border:"none",color:"#fff",borderRadius:8,padding:10,cursor:"pointer",fontWeight:700}}>Guardar PIN</button>
+            </div>
+          </div>
+        </ModalOverlay>}
+        {modalCambiarNombre&&<ModalOverlay onClose={()=>setModalCambiarNombre(null)}>
+          <div style={{background:"#1a1d27",borderRadius:13,padding:22,width:320}}>
+            <h3 style={{margin:"0 0 4px",color:"#f97316"}}>Cambiar nombre</h3>
+            <p style={{margin:"0 0 14px",color:"#6b7280",fontSize:13}}>Usuario: {modalCambiarNombre.usuario} (el PIN no cambia)</p>
+            <div style={{marginBottom:11}}>
+              <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:3}}>Nombre a mostrar</label>
+              <input value={nombreForm} onChange={e=>setNombreForm(e.target.value)} onKeyDown={e=>e.key==="Enter"&&cambiarNombre()} style={{width:"100%",background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"9px 10px",fontSize:14,boxSizing:"border-box"}}/>
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:6}}>
+              <button onClick={()=>setModalCambiarNombre(null)} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:8,padding:10,cursor:"pointer"}}>Cancelar</button>
+              <button onClick={cambiarNombre} style={{flex:1,background:"#f97316",border:"none",color:"#fff",borderRadius:8,padding:10,cursor:"pointer",fontWeight:700}}>Guardar nombre</button>
             </div>
           </div>
         </ModalOverlay>}

@@ -210,7 +210,10 @@ let proximoJobId = 1;
 app.post("/api/print-jobs", (req, res) => {
   const texto = (req.body && req.body.texto) || "";
   if (!String(texto).trim()) return res.status(400).json({ error: "texto vacío" });
-  const job = { id: proximoJobId++, texto: String(texto), creado: new Date().toISOString() };
+  // origen: rol de quien pidió la impresión (mozo, cajero, dueno, etc.)
+  // — lo usa el Agente de Impresión para elegir a qué impresora mandarlo.
+  const origen = (req.body && req.body.origen) || "";
+  const job = { id: proximoJobId++, texto: String(texto), origen: String(origen), creado: new Date().toISOString() };
   colaImpresion.push(job);
   if (colaImpresion.length > 200) colaImpresion = colaImpresion.slice(-200);
   res.json({ ok: true, id: job.id });
