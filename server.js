@@ -69,14 +69,28 @@ function cargarEstado() {
 // terminó bien se reemplaza el archivo real (rename es una operación
 // instantánea). Así, si la PC se apaga o Render reinicia el proceso a
 // mitad de un guardado, nunca queda un data.json a medio escribir.
+//
+// IMPORTANTE: usamos las versiones ASÍNCRONAS de fs (fs.promises), no
+// las "Sync". Las versiones "Sync" congelan TODO el servidor mientras
+// escriben — ninguna otra tablet puede recibir respuesta mientras
+// tanto. Con archivos chicos no se nota, pero cuando el restaurante
+// tiene muchos pedidos acumulados, esa pausa se hace larga y una
+// tablet que se está por conectar se queda con la pantalla de
+// "Cargando..." trabada hasta que termina el guardado de la otra.
+//
+// `colaGuardado` encadena los guardados uno atrás de otro (nunca dos
+// al mismo tiempo, para no pisarse), pero sin bloquear el servidor
+// mientras cada uno ocurre.
+let colaGuardado = Promise.resolve();
 function guardarEstado(estado) {
-  try {
-    const tmp = DATA_FILE + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(estado));
-    fs.renameSync(tmp, DATA_FILE);
-  } catch (e) {
-    console.error("No se pudo guardar en disco:", e.message);
-  }
+  colaGuardado = colaGuardado
+    .then(async () => {
+      const tmp = DATA_FILE + ".tmp";
+      await fs.promises.writeFile(tmp, JSON.stringify(estado));
+      await fs.promises.rename(tmp, DATA_FILE);
+    })
+    .catch(e => console.error("No se pudo guardar en disco:", e.message));
+  return colaGuardado;
 }
 
 // Cada 100 guardados dejamos una copia de respaldo con fecha, por si
@@ -86,22 +100,21 @@ function backupPeriodico(estado) {
   guardadosDesdeBackup++;
   if (guardadosDesdeBackup < 100) return;
   guardadosDesdeBackup = 0;
-  try {
-    const nombre = `data.${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    fs.writeFileSync(path.join(BACKUP_DIR, nombre), JSON.stringify(estado));
-    const viejos = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith("data.")).sort();
-    while (viejos.length > 20) fs.unlinkSync(path.join(BACKUP_DIR, viejos.shift()));
-  } catch (e) {
-    console.error("No se pudo hacer backup:", e.message);
-  }
+  colaGuardado = colaGuardado
+    .then(async () => {
+      const nombre = `data.${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      await fs.promises.writeFile(path.join(BACKUP_DIR, nombre), JSON.stringify(estado));
+      const viejos = (await fs.promises.readdir(BACKUP_DIR)).filter(f => f.startsWith("data.")).sort();
+      while (viejos.length > 20) await fs.promises.unlink(path.join(BACKUP_DIR, viejos.shift()));
+    })
+    .catch(e => console.error("No se pudo hacer backup:", e.message));
+  return colaGuardado;
 }
 
 function registrarAuditoria(entrada) {
-  try {
-    fs.appendFileSync(AUDIT_FILE, JSON.stringify(entrada) + "\n");
-  } catch (e) {
+  fs.promises.appendFile(AUDIT_FILE, JSON.stringify(entrada) + "\n").catch(() => {
     // la auditoría nunca debe tumbar un guardado real
-  }
+  });
 }
 
 let estado = cargarEstado();
@@ -160,7 +173,7 @@ app.get("/api/state", (req, res) => {
 });
 
 // ── El sistema guarda cambios nuevos ────────────────────
-app.post("/api/state", (req, res) => {
+app.post("/api/state", async (req, res) => {
   const body = req.body || {};
   const origen = body.origen || {};
   let resumen = [];
@@ -184,8 +197,12 @@ app.post("/api/state", (req, res) => {
     return res.status(400).json({ error: "cuerpo inválido" });
   }
 
-  guardarEstado(estado);
-  backupPeriodico(estado);
+  // Estas tres esperan a que el guardado en disco realmente termine
+  // (para no responder "ok" antes de que el dato esté a salvo), pero
+  // como ahora son asíncronas, el servidor puede seguir atendiendo a
+  // otras tablets mientras tanto — ya no se congela nadie más.
+  await guardarEstado(estado);
+  await backupPeriodico(estado);
   registrarAuditoria({
     hora: new Date().toISOString(),
     rev: estado.rev,
