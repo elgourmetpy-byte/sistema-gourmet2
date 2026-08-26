@@ -1839,7 +1839,12 @@ function App() {
 
   // ── Menú ──────────────────────────────────────────────
   const guardarEdicionProducto=()=>{
-    setCarta(prev=>prev.map(p=>p.id===modalEditarProducto.id?{...p,...modalEditarProducto,precio:Number(modalEditarProducto.precio)}:p));
+    setCarta(prev=>prev.map(p=>{
+      if(p.id!==modalEditarProducto.id) return p;
+      const actualizado = {...p,...modalEditarProducto,precio:Number(modalEditarProducto.precio)};
+      if(actualizado.tipo==="bebida"&&!actualizado.sinControlStock) actualizado.stock = Number(modalEditarProducto.stock)||0;
+      return actualizado;
+    }));
     registrarLog("Producto editado",`${modalEditarProducto.nombre} · ${fmtGs(modalEditarProducto.precio)}`);
     showToast("Producto actualizado");setModalEditarProducto(null);
   };
@@ -2610,7 +2615,9 @@ function App() {
             {modalEditarProducto&&<ModalOverlay onClose={()=>setModalEditarProducto(null)}>
               <div style={{background:"#1a1d27",borderRadius:13,padding:22,width:360}}>
                 <h3 style={{margin:"0 0 14px",color:"#3b82f6"}}>Editar producto</h3>
-                {[["Nombre","nombre","text"],["Descripción","desc","text"],["Precio (Gs)","precio","number"]].map(([label,key,type])=>(
+                {[["Nombre","nombre","text"],["Descripción","desc","text"],["Precio (Gs)","precio","number"],
+                  ...(modalEditarProducto.tipo==="bebida"&&!modalEditarProducto.sinControlStock?[["Stock (unidades)","stock","number"]]:[])
+                ].map(([label,key,type])=>(
                   <div key={key} style={{marginBottom:12}}>
                     <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:3}}>{label}</label>
                     <input type={type} value={modalEditarProducto[key]||""} onChange={e=>setModalEditarProducto(p=>({...p,[key]:e.target.value}))} style={{width:"100%",background:"#0f1117",border:"1px solid #3b82f6",color:"#e8e8e8",borderRadius:7,padding:"9px 10px",fontSize:type==="number"?18:13,fontWeight:type==="number"?700:400,boxSizing:"border-box"}}/>
