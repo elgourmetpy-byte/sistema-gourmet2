@@ -1209,43 +1209,89 @@ function App() {
     }).catch(()=>{ setConectado(false); setCargandoInicial(false); });
   },[]);
 
-  // Guarda cambios locales en el servidor (con una pequeña espera para
-  // no saturar). Manda solo lo que cambió desde la última sincronización.
-  useEffect(() => {
-    if(cargandoInicial||applyingRemoteRef.current) return;
-    if(saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    saveTimeoutRef.current = setTimeout(()=>{
-      const base = baseSincronizadaRef.current||{};
-      const dirty = {}; const scalars = {};
-      CLAVES_COMPARTIDAS.forEach(k=>{
-        const actual = valoresCompartidos[k];
-        if(k==="carta"){ scalars.carta = actual; return; }
-        if(esListaConId(actual) || esListaConId(base[k])){
-          const {upsert, del} = diffLista(actual, base[k]);
-          if(upsert.length || del.length) dirty[k] = {upsert, del};
-        } else if(JSON.stringify(actual)!==JSON.stringify(base[k])){
-          scalars[k] = actual;
+  // ── Guardado de cambios locales al servidor ────────────
+  // Se dispara con una pequeña espera (700 ms) para no mandar mil
+  // llamadas mientras el mozo toca. Manda SOLO lo que cambió desde la
+  // última sincronización confirmada (baseSincronizadaRef).
+  //
+  // ⚠️ ARREGLO set-2026 (pérdida de pedidos al cargar a la vez):
+  // Antes, el "paquete" que se mandaba se armaba con una copia del
+  // estado CONGELADA en el momento en que se programó la espera. Si en
+  // esos 700 ms llegaba una actualización de OTRA tablet (por el chequeo
+  // de cada 4 s), esta tablet terminaba mandando esa foto vieja de TODAS
+  // las mesas y PISABA los pedidos que la otra acababa de cargar — se le
+  // "borraba todo" a una de las dos. Ahora el paquete se arma SIEMPRE
+  // con el estado del último instante (valoresCompartidosRef) y contra
+  // la base del último instante, así nunca se manda nada viejo.
+  const sincronizandoRef = useRef(false);
+
+  const enviarCambiosAlServidor = () => {
+    if(cargandoInicial || applyingRemoteRef.current || sincronizandoRef.current) return;
+    const base = baseSincronizadaRef.current || {};
+    const actuales = valoresCompartidosRef.current || {};
+    const dirty = {}; const scalars = {};
+    // Foto EXACTA de lo que estamos por mandar. La base solo avanzará
+    // hasta acá: si algo se toca después, cuenta como pendiente y se
+    // manda en la próxima vuelta.
+    const enviado = {};
+    CLAVES_COMPARTIDAS.forEach(k=>{
+      const actual = actuales[k];
+      enviado[k] = actual;
+      if(k==="carta"){
+        // La carta se manda entera, pero SOLO si realmente cambió
+        // (edición de menú / stock). Antes se mandaba en CADA guardado y
+        // podía pisar un cambio de menú hecho en otra tablet al mismo
+        // tiempo que acá se cargaba un pedido.
+        if(JSON.stringify(actual)!==JSON.stringify(base.carta)){
+          scalars.carta = actual;
+          scalars.menuVersion = MENU_VERSION;
         }
-      });
-      scalars.menuVersion = MENU_VERSION;
+        return;
+      }
+      if(esListaConId(actual) || esListaConId(base[k])){
+        const {upsert, del} = diffLista(actual, base[k]);
+        if(upsert.length || del.length) dirty[k] = {upsert, del};
+      } else if(JSON.stringify(actual)!==JSON.stringify(base[k])){
+        scalars[k] = actual;
+      }
+    });
 
-      // Nada relevante cambió (puede pasar justo después de aplicar
-      // datos remotos) -> no gastamos una llamada al servidor.
-      if(Object.keys(dirty).length===0 && Object.keys(scalars).length<=1) return;
+    // Nada cambió -> no gastamos una llamada al servidor.
+    if(Object.keys(dirty).length===0 && Object.keys(scalars).length===0) return;
 
-      const origen = {usuario: usuario?.nombre||null, rol: usuario?.rol||null};
-      fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
-        .then(r=>r.json()).then(res=>{
-          serverRevRef.current=res.rev; setConectado(true);
-          // Esto es lo último que sabemos que el servidor ya tiene: pasa
-          // a ser la nueva base de comparación para el próximo guardado.
-          const nuevaBase = {...base};
-          CLAVES_COMPARTIDAS.forEach(k=>{ nuevaBase[k]=valoresCompartidos[k]; });
-          baseSincronizadaRef.current = nuevaBase;
-        })
-        .catch(()=>setConectado(false));
+    sincronizandoRef.current = true;
+    const origen = {usuario: usuario?.nombre||null, rol: usuario?.rol||null};
+    fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
+      .then(r=>r.json()).then(res=>{
+        serverRevRef.current=res.rev; setConectado(true);
+        // La base avanza SOLO en las claves que efectivamente mandamos, y
+        // solo hasta la foto que mandamos (no al estado actual, que puede
+        // haber cambiado mientras la llamada viajaba).
+        const nuevaBase = {...baseSincronizadaRef.current};
+        Object.keys(dirty).forEach(k=>{ nuevaBase[k]=enviado[k]; });
+        Object.keys(scalars).forEach(k=>{ if(k!=="menuVersion") nuevaBase[k]=enviado[k]; });
+        baseSincronizadaRef.current = nuevaBase;
+      })
+      .catch(()=>setConectado(false))
+      .finally(()=>{ sincronizandoRef.current = false; });
+  };
+  const enviarCambiosRef = useRef(enviarCambiosAlServidor);
+  enviarCambiosRef.current = enviarCambiosAlServidor;
+
+  useEffect(() => {
+    if(cargandoInicial) return;
+    if(saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(function intentar(){
+      // Si justo estamos aplicando datos que llegaron de otra tablet, o
+      // ya hay un guardado en curso, esperamos un toque y reintentamos
+      // (así no mandamos una foto a medio actualizar).
+      if(applyingRemoteRef.current || sincronizandoRef.current){
+        saveTimeoutRef.current = setTimeout(intentar, 200);
+        return;
+      }
+      enviarCambiosRef.current();
     },700);
-    return ()=>clearTimeout(saveTimeoutRef.current);
+    return ()=>{ if(saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); };
     // eslint-disable-next-line
   },[mesas,carta,ventas,log,pedidosDelivery,enviosDelivery,clientes,clientesDelivery,insumos,empaques,limpieza,compras,arqueoAbierto,usuarios,umbralArqueo,telefonoAlertaArqueo,historialTickets,cargandoInicial]);
 
@@ -1383,7 +1429,7 @@ function App() {
   const abrirMesa = (mesa,comensales,mozo) => {
     setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"ocupada",hora:ahora(),comensales,mozo,pedidos:[],enviados:[]}:m));
     setModalMesa(null);registrarLog("Abrió mesa",`${mesa.sector} #${mesa.numero}`);
-    showToast(`Mesa ${mesa.numero} abierta`);
+    showToast(`${SECTORES.find(s=>s.id===mesa.sector)?.nombre||"Mesa"} ${mesa.numero} abierta`);
   };
 
   const agregarItemMesa = (mesaId,item,nota="",guarnicionElegida="") => {
@@ -1438,11 +1484,11 @@ function App() {
       lineas.push("[S]*** SIN VALOR FISCAL ***");
       lineas.push("[H]");
       if(ticket.esDelivery){
-        lineas.push(`[S]${ticket.tipoEntrega==="buscan"?"PASA A BUSCAR":"DELIVERY"}`);
+        lineas.push(`[S]${ticket.tipoEntrega==="buscan"?"RETIRO":"DELIVERY"}`);
         if(ticket.cliente)  lineas.push(`[C]${ticket.cliente}`);
         if(ticket.telefono) lineas.push(`[C]${ticket.telefono}`);
       } else {
-        lineas.push(`[S]${ticket.sector} - Mesa #${ticket.numero}`);
+        lineas.push(`[S]${ticket.sector} ${ticket.numero}`);
         if(ticket.mozo) lineas.push(`[C]Mozo: ${ticket.mozo}`);
       }
       lineas.push("[H]");
@@ -1462,12 +1508,11 @@ function App() {
       // Comanda de cocina/barra — letra grande, se lee de lejos
       lineas.push(`[TIPO]${ticket.esDelivery?"comanda-delivery":"comanda-mesa"}`);
       if(ticket.esDelivery){
-        lineas.push(`[T]${ticket.tipoEntrega==="buscan"?"RETIRO":"DELIVERY"}`);
+        lineas.push(`[T]${(ticket.tipoEntrega||ticket.tipo)==="buscan"?"RETIRO":"DELIVERY"}`);
         if(ticket.cliente)  lineas.push(`[S]${ticket.cliente}`);
         if(ticket.telefono) lineas.push(`[C]${ticket.telefono}`);
       } else {
-        lineas.push(`[T]MESA ${ticket.numero}`);
-        lineas.push(`[C]${ticket.sector}`);
+        lineas.push(`[T]${ticket.sector} ${ticket.numero}`);
         if(ticket.mozo) lineas.push(`[C]Mozo: ${ticket.mozo}`);
       }
       lineas.push(`[C]${ticket.hora||""}`);
@@ -1546,7 +1591,7 @@ function App() {
     const total=totalMesa(mesa)+propina;
     descontarStockPorVenta(mesa.pedidos);
     if(medioPago==="Crédito"&&clienteCCId){
-      const deuda={id:Date.now(),origen:`Mesa ${SECTORES.find(s=>s.id===mesa.sector)?.nombre} #${mesa.numero}`,items:mesa.pedidos,total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
+      const deuda={id:Date.now(),origen:`${SECTORES.find(s=>s.id===mesa.sector)?.nombre} ${mesa.numero}`,items:mesa.pedidos,total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
       setClientes(prev=>prev.map(c=>c.id===clienteCCId?{...c,deudas:[...c.deudas,deuda]}:c));
       registrarLog("Crédito",`Mesa #${mesa.numero} → ${clientes.find(c=>c.id===clienteCCId)?.nombre}`);
       showToast("Deuda cargada a Crédito","warn");
@@ -1760,7 +1805,11 @@ function App() {
     if(!nuevos.length){showToast("No hay ítems nuevos","warn");return;}
     const itemsCocina=nuevos.filter(p=>p.tipo!=="bebida");
     const itemsBarra=nuevos.filter(p=>p.tipo==="bebida");
-    const ticketComandaDelivery = {tipo:pedido.tipoEntrega||"delivery",cliente:pedido.cliente,telefono:pedido.telefono,itemsCocina,itemsBarra,hora:ahora(),esDelivery:true,notas:pedido.notas||""};
+    // OJO: hay que pasar `tipoEntrega` explícito. El texto que se manda a
+    // la impresora (construirTextoComanda) decide "RETIRO" vs "DELIVERY"
+    // mirando ticket.tipoEntrega; si no viene, siempre salía "DELIVERY"
+    // aunque el pedido fuera retiro, y había que reimprimir a mano.
+    const ticketComandaDelivery = {tipo:pedido.tipoEntrega||"delivery",tipoEntrega:pedido.tipoEntrega||"delivery",cliente:pedido.cliente,telefono:pedido.telefono,itemsCocina,itemsBarra,hora:ahora(),esDelivery:true,notas:pedido.notas||""};
     setTicketModal(ticketComandaDelivery);
     enviarAImpresora(ticketComandaDelivery);
     setPedidosDelivery(prev=>prev.map(p=>p.id===pedido.id?{...p,enviados:sumarEnviados(p.enviados,p.items,nuevos)}:p));
@@ -2795,7 +2844,7 @@ function App() {
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {ventasCreditoHoy.map(v=>(
                   <div key={v.id} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}>
-                    <span>{v.tipo==="mesa"?`${SECTORES.find(s=>s.id===v.sector)?.nombre} #${v.mesa}`:v.tipo==="delivery"?`Delivery — ${v.cliente}`:v.cliente||"Cliente"}</span>
+                    <span>{v.tipo==="mesa"?`${SECTORES.find(s=>s.id===v.sector)?.nombre} ${v.mesa}`:v.tipo==="delivery"?`Delivery — ${v.cliente}`:v.cliente||"Cliente"}</span>
                     <span style={{fontWeight:700,color:"#ef4444"}}>{fmtGs(v.total)}</span>
                   </div>
                 ))}
@@ -2832,7 +2881,7 @@ function App() {
                 {[...ticketsHoy].reverse().map(t=>(
                   <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 11px",background:"#0f1117",borderRadius:8}}>
                     <div>
-                      <div style={{fontWeight:600,fontSize:13}}>{t.esDelivery?`${t.tipoEntrega==="buscan"?"Pasa a buscar":"Delivery"} — ${t.cliente||""}`:`${t.sector} — Mesa #${t.numero}`}</div>
+                      <div style={{fontWeight:600,fontSize:13}}>{t.esDelivery?`${t.tipoEntrega==="buscan"?"Retiro":"Delivery"} — ${t.cliente||""}`:`${t.sector} ${t.numero}`}</div>
                       <div style={{fontSize:10,color:"#6b7280"}}>{t.hora} · {fmtGs(t.total)}</div>
                     </div>
                     <button onClick={()=>{setTicketModal(t);enviarAImpresora(t);}} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:7,padding:"7px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🖨 Reimprimir</button>
@@ -2847,7 +2896,7 @@ function App() {
                 <div style={{display:"flex",flexDirection:"column",gap:6}}>
                   {[...ventasHoy].reverse().map(v=>(
                     <div key={v.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 11px",background:"#0f1117",borderRadius:8}}>
-                      <div><div style={{fontWeight:600,fontSize:13}}>{v.tipo==="mesa"?`${SECTORES.find(s=>s.id===v.sector)?.nombre} #${v.mesa}`:v.tipo==="delivery"?`Delivery — ${v.cliente}`:`Pago CC — ${v.cliente}`}</div><div style={{fontSize:10,color:"#6b7280"}}>{v.hora} · {v.medioPago} · {v.cajero}</div></div>
+                      <div><div style={{fontWeight:600,fontSize:13}}>{v.tipo==="mesa"?`${SECTORES.find(s=>s.id===v.sector)?.nombre} ${v.mesa}`:v.tipo==="delivery"?`Delivery — ${v.cliente}`:`Pago CC — ${v.cliente}`}</div><div style={{fontSize:10,color:"#6b7280"}}>{v.hora} · {v.medioPago} · {v.cajero}</div></div>
                       <div style={{fontWeight:800,color:"#22c55e",fontSize:14}}>{fmtGs(v.total)}</div>
                     </div>
                   ))}
@@ -3164,7 +3213,7 @@ function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busq
     <div>
       <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14,flexWrap:"wrap"}}>
         <button onClick={onVolver} style={{background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:"7px 11px",cursor:"pointer",fontSize:12}}>← Volver</button>
-        <h2 style={{margin:0,color:sectorColor||"#f97316",fontSize:18}}>{sectorNombre} — Mesa #{mesa.numero}</h2>
+        <h2 style={{margin:0,color:sectorColor||"#f97316",fontSize:18}}>{sectorNombre} {mesa.numero}</h2>
         <span style={{color:"#6b7280",fontSize:11}}>{mesa.comensales}👤 · {mesa.mozo||"Sin mozo"} · {mesa.hora}</span>
         <div style={{marginLeft:"auto",display:"flex",gap:6}}>
           {hayNuevos&&<button onClick={onEnviarCocina} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:7,padding:"8px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🖨 Cocina</button>}
@@ -3484,13 +3533,13 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
           </div>
           {ticket.esDelivery?(
             <>
-              <div style={{textAlign:"center",fontWeight:900,fontSize:15,marginBottom:3}}>{ticket.tipoEntrega==="buscan"?"🚶 PASA A BUSCAR":"🛵 DELIVERY"}</div>
+              <div style={{textAlign:"center",fontWeight:900,fontSize:15,marginBottom:3}}>{ticket.tipoEntrega==="buscan"?"🚶 RETIRO":"🛵 DELIVERY"}</div>
               <div style={{textAlign:"center",fontSize:14,fontWeight:700,marginBottom:2}}>{ticket.cliente}</div>
               {ticket.telefono&&<div style={{textAlign:"center",fontSize:11,color:"#555",marginBottom:8}}>{ticket.telefono}</div>}
             </>
           ):(
             <>
-              <div style={{textAlign:"center",fontWeight:900,fontSize:16,marginBottom:8}}>{ticket.sector} — Mesa #{ticket.numero}</div>
+              <div style={{textAlign:"center",fontWeight:900,fontSize:16,marginBottom:8}}>{ticket.sector} {ticket.numero}</div>
               {ticket.mozo&&<div style={{textAlign:"center",fontSize:11,color:"#555",marginBottom:8}}>Mozo: {ticket.mozo}</div>}
             </>
           )}
@@ -3515,8 +3564,8 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
         <>
           <div style={{textAlign:"center",fontSize:11,color:"#666",fontWeight:700,marginBottom:6}}>{ticket.hora}</div>
           <div style={{borderTop:"2px dashed #ccc",borderBottom:"2px dashed #ccc",padding:"8px 0",marginBottom:8,textAlign:"center"}}>
-            {!ticket.esDelivery&&<div style={{fontWeight:900,fontSize:17}}>{ticket.sector} — Mesa #{ticket.numero}</div>}
-            {ticket.esDelivery&&<div style={{fontWeight:900,fontSize:14}}>{ticket.tipo==="buscan"?"🚶 PASA A BUSCAR":"🛵 DELIVERY"}</div>}
+            {!ticket.esDelivery&&<div style={{fontWeight:900,fontSize:17}}>{ticket.sector} {ticket.numero}</div>}
+            {ticket.esDelivery&&<div style={{fontWeight:900,fontSize:14}}>{(ticket.tipoEntrega||ticket.tipo)==="buscan"?"🚶 RETIRO":"🛵 DELIVERY"}</div>}
             {ticket.esDelivery&&<div style={{fontSize:13,fontWeight:700,marginTop:3}}>{ticket.cliente}</div>}
             {ticket.esDelivery&&ticket.telefono&&<div style={{fontSize:11,color:"#555"}}>{ticket.telefono}</div>}
             {!ticket.esDelivery&&ticket.mozo&&<div style={{fontSize:11,color:"#555",marginTop:2}}>Mozo: {ticket.mozo}</div>}
@@ -3573,7 +3622,7 @@ function AbrirMesaForm({ mesa, sectores, mozoFijo, onAbrir, onClose }) {
   const [mozo,setMozo]=useState("");
   const sector=sectores.find(s=>s.id===mesa.sector);
   return(<div style={{background:"#1a1d27",borderRadius:13,padding:22,width:300}}>
-    <h3 style={{margin:"0 0 4px",color:sector?.color||"#f97316"}}>{sector?.nombre} — Mesa #{mesa.numero}</h3>
+    <h3 style={{margin:"0 0 4px",color:sector?.color||"#f97316"}}>{sector?.nombre} {mesa.numero}</h3>
     <div style={{marginBottom:12}}>
       <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:4}}>Comensales</label>
       <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -3627,7 +3676,7 @@ function ModalCobro({ data, clientes, fmtGs, onCobrar, onClose }) {
     if(data.tipo==="mesa"&&METODOS_PROPINA_EXCEDENTE.includes(mp)) setMontoCobrado(String(montoCuenta));
   };
   return(<div style={{background:"#1a1d27",borderRadius:14,padding:24,width:380,maxHeight:"90vh",overflowY:"auto"}}>
-    <h3 style={{margin:"0 0 4px",color:"#f97316",fontSize:17}}>{data.tipo==="mesa"?`Cobrar Mesa #${data.data.numero}`:`Cobrar — ${data.data.cliente}`}</h3>
+    <h3 style={{margin:"0 0 4px",color:"#f97316",fontSize:17}}>{data.tipo==="mesa"?`Cobrar ${SECTORES.find(s=>s.id===data.data.sector)?.nombre||""} ${data.data.numero}`:`Cobrar — ${data.data.cliente}`}</h3>
     <p style={{margin:"0 0 12px",color:"#6b7280",fontSize:11}}>{data.tipo==="mesa"?`${data.data.comensales} comensales · ${data.data.mozo||""}`:data.data.direccion||""}</p>
     <div style={{marginBottom:12}}>
       {items.map((i,idx)=><div key={idx} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#9ca3af",marginBottom:2}}><span>{i.nombre} x{i.qty}{i.guarnicionElegida?` (${i.guarnicionElegida})`:""}{i.nota?` — ${i.nota}`:""}</span><span>{fmtGs(i.precio*i.qty)}</span></div>)}
