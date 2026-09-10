@@ -1024,8 +1024,11 @@ function App() {
   const [mesaActiva,   setMesaActiva]   = useState(()=>cargarSesionLocal().mesaActiva ?? null);
   const [modalMesa,    setModalMesa]    = useState(null);
   const [modalPago,    setModalPago]    = useState(null);
+  const [modalDividir, setModalDividir] = useState(null);   // mesa.id cuya cuenta se está dividiendo
   const [ticketModal,  setTicketModal]  = useState(null);
   const [historialTickets, setHistorialTickets] = useState([]);
+  const [totalesCajaVisibles, setTotalesCajaVisibles] = useState(false); // "Total del día" destapado con PIN de dueño
+  const [pedirPinCaja, setPedirPinCaja] = useState(false);
   const [catFiltro,    setCatFiltro]    = useState("Todas");
   const [busqueda,     setBusqueda]     = useState("");
 
@@ -1332,6 +1335,10 @@ function App() {
     // eslint-disable-next-line
   },[]);
 
+  // El "Total del día" destapado con PIN vuelve a ocultarse al salir de Caja
+  // (o al cambiar de usuario), para que no quede a la vista del siguiente.
+  useEffect(()=>{ setTotalesCajaVisibles(false); setPedirPinCaja(false); },[seccion,usuario]);
+
   // ═══════════════════════════════════════════════════════
   // REPARACIÓN DE IDENTIFICACIONES REPETIDAS
   // Las importaciones viejas de contactos por CSV crearon muchos
@@ -1456,6 +1463,112 @@ function App() {
 
   const totalMesa = mesa => mesa.pedidos.reduce((s,p)=>s+p.precio*p.qty,0);
 
+  // ── Cobro separado / dividir cuenta ────────────────────────────────
+  // Cuando una mesa la pagan varios comensales por separado, cada pago
+  // se guarda en mesa.pagosParciales y se registra como su propia venta
+  // (con su medio de pago y su ticket). La mesa se cierra sola cuando ya
+  // no queda saldo. Dos modos: "por consumo" (se tildan ítems, incluso
+  // cantidades parciales: 2 de 4 aguas) y "partes iguales" (monto fijo
+  // por persona). El stock se descuenta una sola vez, al completarse.
+  const pagadoPorKeyMesa = (mesa) => {
+    const acc = {};
+    (mesa.pagosParciales||[]).forEach(pg=>(pg.items||[]).forEach(it=>{ acc[it._key]=(acc[it._key]||0)+it.qty; }));
+    return acc;
+  };
+  const itemsRestantesMesa = (mesa) => {
+    const pg = pagadoPorKeyMesa(mesa);
+    return (mesa.pedidos||[]).map(p=>({...p, qty:p.qty-(pg[p._key]||0)})).filter(p=>p.qty>0);
+  };
+  const totalPagadoParcial = (mesa) => (mesa.pagosParciales||[]).reduce((s,pg)=>s+(pg.subtotal||0),0);
+  const hayDivisionEnCurso = (mesa) => ((mesa.pagosParciales||[]).length>0) || !!mesa.divisionIgual;
+  const totalRestanteMesa = (mesa) => {
+    if(mesa.divisionIgual) return Math.max(0, totalMesa(mesa) - totalPagadoParcial(mesa));
+    return itemsRestantesMesa(mesa).reduce((s,p)=>s+p.precio*p.qty,0);
+  };
+  const grupoCobroMesa = (mesa) => `${mesa.id}-${mesa.hora||""}`;
+
+  // Registra UN pago separado. pagoMeta = { etiqueta, items:[], montoFijo, partes, nPersonas }
+  const registrarPagoParcial = (mesa, pagoMeta, medioPago, propina=0, clienteCCId=null) => {
+    if(!puedeCobrarMesa()){
+      registrarLog("Intento de cobro no autorizado",`${usuario?.nombre||"?"} (${usuario?.rol||"?"}) · Mesa #${mesa.numero}`);
+      showToast("Tu usuario no tiene permiso para cobrar ni cerrar mesas","err");
+      return;
+    }
+    const subtotal = pagoMeta.montoFijo!=null
+      ? Math.round(pagoMeta.montoFijo)
+      : (pagoMeta.items||[]).reduce((s,i)=>s+i.precio*i.qty,0);
+    if(subtotal<=0){ showToast("Ese pago no tiene monto","warn"); return; }
+    if(medioPago==="Crédito" && !clienteCCId){ showToast("Elegí el cliente para el Crédito","warn"); return; }
+    const propNum = Math.max(0, Math.round(propina||0));
+    const total = subtotal + propNum;
+    const etiqueta = (pagoMeta.etiqueta||"").trim() || `#${(mesa.pagosParciales||[]).length+1}`;
+    const sectorNom = SECTORES.find(s=>s.id===mesa.sector)?.nombre || "Salón";
+    const pagoId = Date.now() + Math.floor(Math.random()*100000);
+
+    if(medioPago==="Crédito"){
+      const deuda={id:pagoId,origen:`${sectorNom} ${mesa.numero} · ${etiqueta}`,items:pagoMeta.items||[],total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
+      setClientes(prev=>prev.map(c=>c.id===clienteCCId?{...c,deudas:[...c.deudas,deuda]}:c));
+      registrarLog("Crédito (pago separado)",`${sectorNom} #${mesa.numero} · ${etiqueta} → ${clientes.find(c=>c.id===clienteCCId)?.nombre}`);
+    } else {
+      setVentas(prev=>[...prev,{id:pagoId,tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:pagoMeta.items||[],total,propina:propNum,medioPago,hora:ahora(),fecha:hoy(),mozo:mesa.mozo,cajero:usuario.nombre,parcial:true,grupo:grupoCobroMesa(mesa),etiquetaPago:etiqueta}]);
+      registrarLog("Cobro separado",`${sectorNom} #${mesa.numero} · ${etiqueta} · ${fmtGs(total)} · ${medioPago}`);
+    }
+
+    const pago={id:pagoId,etiqueta,items:pagoMeta.items||[],subtotal,propina:propNum,total,medioPago,partes:pagoMeta.partes||null,hora:ahora()};
+    const divisionIgual = pagoMeta.montoFijo!=null
+      ? (mesa.divisionIgual || {n:pagoMeta.nPersonas||null})
+      : mesa.divisionIgual;
+    // Se calcula ACÁ (con el estado actual + este pago) si la división quedó
+    // saldada — no se puede confiar en leerlo después del setMesas asíncrono.
+    const mesaProyectada = {...mesa, pagosParciales:[...(mesa.pagosParciales||[]), pago], divisionIgual};
+    const divisionSaldada = totalRestanteMesa(mesaProyectada) <= 0;
+
+    // ticket de ESTE pago: se manda directo a la impresora y queda para
+    // reimprimir en Caja. No abre el modal en pantalla para no cortar el
+    // flujo de la división (el siguiente comensal ya está esperando).
+    const ticket={tipo:"svf",sector:sectorNom,numero:mesa.numero,mozo:mesa.mozo,items:pagoMeta.items||[],total,hora:ahora(),fecha:hoy(),pagoSeparado:etiqueta};
+    enviarAImpresora(ticket);
+    setHistorialTickets(prev=>[...prev,{...ticket,id:pagoId}]);
+
+    if(divisionSaldada){
+      // división completa -> descuento de stock (una sola vez) y cierre
+      descontarStockPorVenta(mesa.pedidos||[]);
+      setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
+      setModalDividir(null); setMesaActiva(null);
+      showToast(`Mesa cerrada — cobro separado completo`);
+    } else {
+      setMesas(prev=>prev.map(m=>m.id===mesa.id
+        ? {...m, pagosParciales:[...(m.pagosParciales||[]), pago], divisionIgual: pagoMeta.montoFijo!=null ? (m.divisionIgual||{n:pagoMeta.nPersonas||null}) : m.divisionIgual}
+        : m));
+      showToast(`${etiqueta} cobrado — ${fmtGs(total)}`);
+    }
+  };
+
+  const cerrarMesaDividida = (mesaId) => {
+    const m0 = mesas.find(m=>m.id===mesaId);
+    if(!m0) return;
+    descontarStockPorVenta(m0.pedidos||[]);
+    setMesas(prev=>prev.map(m=>m.id===mesaId?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
+    setModalDividir(null); setMesaActiva(null);
+    showToast("Mesa cerrada");
+  };
+
+  const deshacerUltimoPagoParcial = (mesaId) => {
+    const mesa = mesas.find(m=>m.id===mesaId);
+    const ultimo = (mesa?.pagosParciales||[]).slice(-1)[0];
+    if(!ultimo) return;
+    setMesas(prev=>prev.map(m=>{
+      if(m.id!==mesaId) return m;
+      const pagos=(m.pagosParciales||[]).filter(p=>p.id!==ultimo.id);
+      return {...m, pagosParciales:pagos, divisionIgual: pagos.length? m.divisionIgual : null};
+    }));
+    setVentas(prev=>prev.filter(v=>v.id!==ultimo.id));
+    setClientes(prev=>prev.map(c=>({...c, deudas:(c.deudas||[]).filter(d=>d.id!==ultimo.id)})));
+    setHistorialTickets(prev=>prev.filter(t=>t.id!==ultimo.id));
+    registrarLog("Deshacer pago separado",`Mesa · ${ultimo.etiqueta} · ${fmtGs(ultimo.total)}`);
+    showToast(`Pago ${ultimo.etiqueta} deshecho`,"warn");
+  };
+
   // ── Puente de impresión automática (envía la comanda a la bandeja) ──
   // ═══════════════════════════════════════════════════════
   // TEXTO PARA LA IMPRESORA TÉRMICA
@@ -1490,6 +1603,7 @@ function App() {
       } else {
         lineas.push(`[S]${ticket.sector} ${ticket.numero}`);
         if(ticket.mozo) lineas.push(`[C]Mozo: ${ticket.mozo}`);
+        if(ticket.pagoSeparado) lineas.push(`[S]PAGO SEPARADO: ${ticket.pagoSeparado}`);
       }
       lineas.push("[H]");
       (ticket.items||[]).forEach(i=>{
@@ -1581,27 +1695,38 @@ function App() {
     }
   },[]);
 
-  const cerrarCuenta = (mesa,medioPago,propina=0,clienteCCId=null) => {
+  const cerrarCuenta = (mesa,medioPago,propina=0,clienteCCId=null,esResto=false) => {
     if(!puedeCobrarMesa()){
       registrarLog("Intento de cobro no autorizado",`${usuario?.nombre||"?"} (${usuario?.rol||"?"}) · Mesa #${mesa.numero}`);
       showToast("Tu usuario no tiene permiso para cobrar ni cerrar mesas","err");
       setModalPago(null);
       return;
     }
-    const total=totalMesa(mesa)+propina;
+    // Si venía de una división en curso, acá se cobra SOLO lo que falta;
+    // los pagos separados anteriores ya quedaron registrados aparte.
+    // En "partes iguales" lo que falta es un MONTO (no ítems concretos).
+    const restoPorMonto = esResto && !!mesa.divisionIgual;
+    const pedidosCobro = restoPorMonto ? [] : (esResto ? itemsRestantesMesa(mesa) : mesa.pedidos);
+    const baseCobro = restoPorMonto
+      ? Math.max(0, totalMesa(mesa) - totalPagadoParcial(mesa))
+      : pedidosCobro.reduce((s,p)=>s+p.precio*p.qty,0);
+    const total=baseCobro+propina;
+    // El stock se descuenta una sola vez, al cerrar: sobre TODO el pedido
+    // original (los pagos separados previos no descuentan stock por sí solos).
     descontarStockPorVenta(mesa.pedidos);
+    const extraDiv = esResto ? {parcial:true,grupo:grupoCobroMesa(mesa),etiquetaPago:"Resto"} : {};
     if(medioPago==="Crédito"&&clienteCCId){
-      const deuda={id:Date.now(),origen:`${SECTORES.find(s=>s.id===mesa.sector)?.nombre} ${mesa.numero}`,items:mesa.pedidos,total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
+      const deuda={id:Date.now(),origen:`${SECTORES.find(s=>s.id===mesa.sector)?.nombre} ${mesa.numero}${esResto?" · Resto":""}`,items:pedidosCobro,total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
       setClientes(prev=>prev.map(c=>c.id===clienteCCId?{...c,deudas:[...c.deudas,deuda]}:c));
       registrarLog("Crédito",`Mesa #${mesa.numero} → ${clientes.find(c=>c.id===clienteCCId)?.nombre}`);
       showToast("Deuda cargada a Crédito","warn");
     } else {
-      setVentas(prev=>[...prev,{id:Date.now(),tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:mesa.pedidos,total,propina,medioPago,hora:ahora(),fecha:hoy(),mozo:mesa.mozo,cajero:usuario.nombre}]);
-      registrarLog("Cobro mesa",`${mesa.sector} #${mesa.numero} · ${fmtGs(total)} · ${medioPago}`);
+      setVentas(prev=>[...prev,{id:Date.now(),tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:pedidosCobro,total,propina,medioPago,hora:ahora(),fecha:hoy(),mozo:mesa.mozo,cajero:usuario.nombre,...extraDiv}]);
+      registrarLog("Cobro mesa",`${mesa.sector} #${mesa.numero} · ${fmtGs(total)} · ${medioPago}${esResto?" (resto de división)":""}`);
       showToast(`Mesa cerrada — ${fmtGs(total)}`);
     }
-    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0}:m));
-    setModalPago(null);setMesaActiva(null);
+    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
+    setModalPago(null);setModalDividir(null);setMesaActiva(null);
   };
 
   // Ticket "Sin Valor Fiscal" al pedir cuenta
@@ -2027,7 +2152,14 @@ function App() {
     });
   const ventasHoy   = ventas.filter(v=>v.fecha===hoy());
   const ticketsHoy  = (historialTickets||[]).filter(t=>t.fecha===hoy());
-  const totalHoy    = ventasHoy.reduce((s,v)=>s+v.total,0);
+  const totalHoy    = ventasHoy.reduce((s,v)=>s+v.total,0);   // lo efectivamente cobrado (efectivo + tarjetas + transferencia + QR)
+  // "Mesas" cuenta mesas distintas: los pagos separados de una misma mesa
+  // (mismo `grupo`) cuentan como una sola.
+  const cuentaMesasHoy = (()=>{
+    const sueltas = ventasHoy.filter(v=>v.tipo==="mesa" && !v.parcial).length;
+    const grupos  = new Set(ventasHoy.filter(v=>v.tipo==="mesa" && v.parcial && v.grupo).map(v=>v.grupo)).size;
+    return sueltas + grupos;
+  })();
   const enviosDeliveryHoy = enviosDelivery.filter(e=>e.fecha===hoy());
   const totalEnvioHoy = enviosDeliveryHoy.reduce((s,e)=>s+(e.monto||0),0);
   const historialEnviosPorDia = Object.values(enviosDelivery.reduce((acc,e)=>{
@@ -2041,8 +2173,12 @@ function App() {
   const propinasPorMozoHoy = {};
   propinasHoy.forEach(v=>{ const m=v.mozo||"Sin asignar"; propinasPorMozoHoy[m]=(propinasPorMozoHoy[m]||0)+v.propina; });
   const porMedioPago= MEDIOS_PAGO.filter(m=>m!=="Crédito").map(m=>({medio:m,total:ventasHoy.filter(v=>v.medioPago===m).reduce((s,v)=>s+v.total,0),cant:ventasHoy.filter(v=>v.medioPago===m).length})).filter(m=>m.cant>0);
-  const ventasCreditoHoy = ventasHoy.filter(v=>v.medioPago==="Crédito");
-  const totalCreditoHoy = ventasCreditoHoy.reduce((s,v)=>s+v.total,0);
+  // Fiado del día: se toma de las deudas cargadas hoy en Cuenta Corriente
+  // (las ventas a crédito NO entran en `ventas`, van directo al cliente).
+  const deudasHoy = (clientes||[]).flatMap(c => (c.deudas||[]).filter(d=>d.fecha===hoy()).map(d=>({...d, clienteNombre:c.nombre})));
+  const totalCreditoHoy = deudasHoy.reduce((s,d)=>s+(d.total||0),0);
+  const totalVendidoHoy = totalHoy + totalCreditoHoy;   // todo lo facturado hoy, cobrado + fiado
+  const mostrarTotalesCaja = esDueno() || totalesCajaVisibles;   // "Total del día" / "Vendido hoy": solo dueños (o con PIN)
   // ══ REPORTES ══════════════════════════════════════════
   // Las fechas se guardan como "d/m/aaaa" (es-PY) → hay que parsearlas
   const parseFechaPY = f => { const [d,m,a]=String(f||"").split("/").map(Number); return new Date(a||1970,(m||1)-1,d||1); };
@@ -2253,7 +2389,14 @@ function App() {
             onQuitarItem={key=>quitarItemMesa(mesaActiva,key)}
             onEnviarCocina={()=>enviarCocina(mesaObj)}
             onPedirCuenta={()=>ticketSVF(mesaObj)}
-            onCobrar={()=>setModalPago({tipo:"mesa",data:mesaObj})}
+            onCobrar={()=>{
+              const div=hayDivisionEnCurso(mesaObj);
+              setModalPago({tipo:"mesa",data:mesaObj,resto:div});
+            }}
+            onDividir={()=>setModalDividir(mesaObj.id)}
+            hayDivision={hayDivisionEnCurso(mesaObj)}
+            pagadoDivision={totalPagadoParcial(mesaObj)}
+            restoDivision={totalRestanteMesa(mesaObj)}
             puedeCobrar={puedeCobrarMesa()}
           />
         )}
@@ -2819,14 +2962,23 @@ function App() {
         {seccion==="caja"&&(
           <div>
             <h2 style={{margin:"0 0 14px"}}>Caja del día — {hoy()}</h2>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px,1fr))",gap:11,marginBottom:20}}>
-              <StatCard label="Total del día"  value={fmtGs(totalHoy)}                                    color="#22c55e"/>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px,1fr))",gap:11,marginBottom:mostrarTotalesCaja&&!esDueno()?8:20}}>
+              {mostrarTotalesCaja?(<>
+                <StatCard label="Total del día (cobrado)" value={fmtGs(totalHoy)}                          color="#22c55e"/>
+                <StatCard label="Vendido hoy (con fiado)" value={fmtGs(totalVendidoHoy)}                   color="#eab308"/>
+              </>):(
+                <button onClick={()=>setPedirPinCaja(true)} style={{gridColumn:"span 2",background:"#1a1d27",border:"1px dashed #4b5563",borderRadius:11,padding:"13px 15px",textAlign:"left",cursor:"pointer",color:"#e8e8e8"}}>
+                  <div style={{fontSize:11,color:"#6b7280",marginBottom:4}}>Total del día</div>
+                  <div style={{fontSize:14,fontWeight:800,color:"#9ca3af"}}>🔒 Oculto — tocá para ver con PIN de dueño</div>
+                </button>
+              )}
               <StatCard label="Ventas"         value={ventasHoy.length}                                   color="#3b82f6"/>
-              <StatCard label="Mesas"          value={ventasHoy.filter(v=>v.tipo==="mesa").length}         color="#f97316"/>
+              <StatCard label="Mesas"          value={cuentaMesasHoy}                                      color="#f97316"/>
               <StatCard label="Delivery"       value={ventasHoy.filter(v=>v.tipo==="delivery").length}     color="#a855f7"/>
               <StatCard label="A pagar Delivery" value={fmtGs(totalEnvioHoy)}                              color="#06b6d4"/>
-              <StatCard label="Vendido a crédito hoy" value={fmtGs(totalCreditoHoy)}                       color="#ef4444"/>
+              <StatCard label="A crédito hoy (fiado)" value={fmtGs(totalCreditoHoy)}                       color="#ef4444"/>
             </div>
+            {mostrarTotalesCaja&&!esDueno()&&<button onClick={()=>setTotalesCajaVisibles(false)} style={{background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:"6px 12px",cursor:"pointer",fontSize:11,marginBottom:20}}>🔒 Volver a ocultar el total</button>}
             {historialEnviosPorDia.length>0&&<div style={{background:"#1a1d27",border:"1px solid #06b6d4",borderRadius:13,padding:16,marginBottom:18}}>
               <h3 style={{margin:"0 0 11px",fontSize:14,color:"#06b6d4"}}>📦 Historial de envíos por día</h3>
               <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:220,overflowY:"auto"}}>
@@ -2839,13 +2991,13 @@ function App() {
               </div>
               <p style={{margin:"10px 0 0",fontSize:10,color:"#6b7280"}}>Incluye todos los viajes de delivery, sin importar el medio de pago (incluso los que quedaron a crédito).</p>
             </div>}
-            {ventasCreditoHoy.length>0&&<div style={{background:"#1a1d27",border:"1px solid #ef4444",borderRadius:13,padding:16,marginBottom:18}}>
+            {deudasHoy.length>0&&<div style={{background:"#1a1d27",border:"1px solid #ef4444",borderRadius:13,padding:16,marginBottom:18}}>
               <h3 style={{margin:"0 0 11px",fontSize:14,color:"#ef4444"}}>🧾 Ventas a crédito (fiado) de hoy</h3>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {ventasCreditoHoy.map(v=>(
-                  <div key={v.id} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}>
-                    <span>{v.tipo==="mesa"?`${SECTORES.find(s=>s.id===v.sector)?.nombre} ${v.mesa}`:v.tipo==="delivery"?`Delivery — ${v.cliente}`:v.cliente||"Cliente"}</span>
-                    <span style={{fontWeight:700,color:"#ef4444"}}>{fmtGs(v.total)}</span>
+                {deudasHoy.map(d=>(
+                  <div key={d.id} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"4px 0"}}>
+                    <span>{d.origen||d.clienteNombre||"Cliente"}{d.clienteNombre&&d.origen?` — ${d.clienteNombre}`:""}</span>
+                    <span style={{fontWeight:700,color:"#ef4444"}}>{fmtGs(d.total)}</span>
                   </div>
                 ))}
                 <div style={{borderTop:"1px solid #2a2d3a",marginTop:6,paddingTop:8,display:"flex",justifyContent:"space-between",fontWeight:800,fontSize:14}}><span>Total fiado hoy</span><span style={{color:"#ef4444"}}>{fmtGs(totalCreditoHoy)}</span></div>
@@ -2881,7 +3033,7 @@ function App() {
                 {[...ticketsHoy].reverse().map(t=>(
                   <div key={t.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 11px",background:"#0f1117",borderRadius:8}}>
                     <div>
-                      <div style={{fontWeight:600,fontSize:13}}>{t.esDelivery?`${t.tipoEntrega==="buscan"?"Retiro":"Delivery"} — ${t.cliente||""}`:`${t.sector} ${t.numero}`}</div>
+                      <div style={{fontWeight:600,fontSize:13}}>{t.esDelivery?`${t.tipoEntrega==="buscan"?"Retiro":"Delivery"} — ${t.cliente||""}`:`${t.sector} ${t.numero}`}{t.pagoSeparado?` · pago ${t.pagoSeparado}`:""}</div>
                       <div style={{fontSize:10,color:"#6b7280"}}>{t.hora} · {fmtGs(t.total)}</div>
                     </div>
                     <button onClick={()=>{setTicketModal(t);enviarAImpresora(t);}} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:7,padding:"7px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🖨 Reimprimir</button>
@@ -3198,8 +3350,36 @@ function App() {
       </div>
 
       {modalPago&&<ModalOverlay onClose={()=>setModalPago(null)}><ModalCobro data={modalPago} clientes={clientes} fmtGs={fmtGs}
-        onCobrar={(mp,prop,ccId)=>{if(modalPago.tipo==="mesa")cerrarCuenta(modalPago.data,mp,prop,ccId);else cerrarDelivery(modalPago.data,mp,ccId);}}
+        itemsResto={!modalPago.resto?null:(modalPago.data.divisionIgual
+          ? [{nombre:"Resto de la división (partes iguales)", precio:Math.max(0,totalMesa(modalPago.data)-totalPagadoParcial(modalPago.data)), qty:1}]
+          : itemsRestantesMesa(modalPago.data))}
+        onCobrar={(mp,prop,ccId)=>{if(modalPago.tipo==="mesa")cerrarCuenta(modalPago.data,mp,prop,ccId,!!modalPago.resto);else cerrarDelivery(modalPago.data,mp,ccId);}}
         onClose={()=>setModalPago(null)}/></ModalOverlay>}
+
+      {modalDividir&&(()=>{
+        const md=mesas.find(m=>m.id===modalDividir);
+        if(!md) return null;
+        return(<ModalOverlay onClose={()=>setModalDividir(null)}>
+          <ModalDividirCuenta
+            mesa={md} clientes={clientes} usuarios={usuarios} fmtGs={fmtGs}
+            sectorNombre={SECTORES.find(s=>s.id===md.sector)?.nombre||"Salón"}
+            restantes={itemsRestantesMesa(md)}
+            totalMesaGs={totalMesa(md)}
+            pagado={totalPagadoParcial(md)}
+            resto={totalRestanteMesa(md)}
+            onPagar={(pagoMeta,mp,prop,ccId)=>registrarPagoParcial(md,pagoMeta,mp,prop,ccId)}
+            onDeshacer={()=>deshacerUltimoPagoParcial(md.id)}
+            onCobrarResto={()=>{setModalDividir(null);setModalPago({tipo:"mesa",data:md,resto:true});}}
+            onCerrarMesa={()=>cerrarMesaDividida(md.id)}
+            onClose={()=>setModalDividir(null)}/>
+        </ModalOverlay>);
+      })()}
+
+      {pedirPinCaja&&<ModalOverlay onClose={()=>setPedirPinCaja(false)}>
+        <PinDueno usuarios={usuarios} titulo="Ver el total del día"
+          onOk={()=>{setTotalesCajaVisibles(true);setPedirPinCaja(false);}}
+          onClose={()=>setPedirPinCaja(false)}/>
+      </ModalOverlay>}
     </div>
   );
 }
@@ -3207,7 +3387,7 @@ function App() {
 // ═══════════════════════════════════════════════════════
 // DETALLE MESA
 // ═══════════════════════════════════════════════════════
-function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busqueda, setBusqueda, todasCategorias, totalMesa, fmtGs, sectorNombre, sectorColor, onVolver, onAgregarItem, onQuitarItem, onEnviarCocina, onPedirCuenta, onCobrar, puedeCobrar }) {
+function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busqueda, setBusqueda, todasCategorias, totalMesa, fmtGs, sectorNombre, sectorColor, onVolver, onAgregarItem, onQuitarItem, onEnviarCocina, onPedirCuenta, onCobrar, onDividir, hayDivision, pagadoDivision, restoDivision, puedeCobrar }) {
   const hayNuevos = itemsPendientes(mesa.pedidos, mesa.enviados).length>0;
   return(
     <div>
@@ -3215,13 +3395,18 @@ function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busq
         <button onClick={onVolver} style={{background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:"7px 11px",cursor:"pointer",fontSize:12}}>← Volver</button>
         <h2 style={{margin:0,color:sectorColor||"#f97316",fontSize:18}}>{sectorNombre} {mesa.numero}</h2>
         <span style={{color:"#6b7280",fontSize:11}}>{mesa.comensales}👤 · {mesa.mozo||"Sin mozo"} · {mesa.hora}</span>
-        <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+        <div style={{marginLeft:"auto",display:"flex",gap:6,flexWrap:"wrap"}}>
           {hayNuevos&&<button onClick={onEnviarCocina} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:7,padding:"8px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🖨 Cocina</button>}
           <button onClick={onPedirCuenta} style={{background:"#ef4444",border:"none",color:"#fff",borderRadius:7,padding:"8px 11px",cursor:"pointer",fontWeight:600,fontSize:12}}>Pedir cuenta</button>
-          {puedeCobrar?<button onClick={onCobrar} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:"8px 13px",cursor:"pointer",fontWeight:700,fontSize:12}}>Cobrar {fmtGs(totalMesa(mesa))}</button>
+          {puedeCobrar&&mesa.pedidos.length>0&&<button onClick={onDividir} style={{background:hayDivision?"#7c3aed":"#3b0764",border:"1px solid #a855f7",color:"#fff",borderRadius:7,padding:"8px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🧾 {hayDivision?"Continuar división":"Dividir cuenta"}</button>}
+          {puedeCobrar?<button onClick={onCobrar} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:"8px 13px",cursor:"pointer",fontWeight:700,fontSize:12}}>{hayDivision?`Cobrar el resto ${fmtGs(restoDivision)}`:`Cobrar ${fmtGs(totalMesa(mesa))}`}</button>
           :<span style={{background:"#1a1d27",border:"1px solid #2a2d3a",color:"#6b7280",borderRadius:7,padding:"8px 13px",fontSize:11}}>🔒 Solo caja puede cobrar</span>}
         </div>
       </div>
+      {hayDivision&&<div style={{background:"#1a1030",border:"1px solid #a855f7",borderRadius:10,padding:"10px 13px",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:8}}>
+        <span style={{fontSize:12,color:"#d8b4fe"}}>🧾 División en curso — Pagado <b>{fmtGs(pagadoDivision)}</b> · Falta <b style={{color:"#fff"}}>{fmtGs(restoDivision)}</b></span>
+        <span style={{fontSize:11,color:"#9ca3af"}}>Usá “Continuar división” para el siguiente pago, o “Cobrar el resto” para cerrar todo junto.</span>
+      </div>}
       <div style={{display:"grid",gridTemplateColumns:"1fr 310px",gap:14}}>
         {/* Menú */}
         <div>
@@ -3540,7 +3725,8 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
           ):(
             <>
               <div style={{textAlign:"center",fontWeight:900,fontSize:16,marginBottom:8}}>{ticket.sector} {ticket.numero}</div>
-              {ticket.mozo&&<div style={{textAlign:"center",fontSize:11,color:"#555",marginBottom:8}}>Mozo: {ticket.mozo}</div>}
+              {ticket.mozo&&<div style={{textAlign:"center",fontSize:11,color:"#555",marginBottom:4}}>Mozo: {ticket.mozo}</div>}
+              {ticket.pagoSeparado&&<div style={{textAlign:"center",fontWeight:900,fontSize:13,marginBottom:8,border:"1px dashed #000",padding:"3px 0"}}>PAGO SEPARADO: {ticket.pagoSeparado}</div>}
             </>
           )}
           <div style={{borderTop:"1px dashed #ccc",borderBottom:"1px dashed #ccc",padding:"8px 0",marginBottom:8}}>
@@ -3648,7 +3834,237 @@ function AbrirMesaForm({ mesa, sectores, mozoFijo, onAbrir, onClose }) {
   </div>);
 }
 
-function ModalCobro({ data, clientes, fmtGs, onCobrar, onClose }) {
+function PinDueno({ usuarios, titulo, onOk, onClose }){
+  const [pin,setPin]=useState(""); const [err,setErr]=useState("");
+  const validar=()=>{
+    const ok=(usuarios||[]).some(u=>u.rol==="dueno" && String(u.pin)===String(pin).trim());
+    if(ok) onOk(); else setErr("PIN incorrecto");
+  };
+  return(<div style={{background:"#1a1d27",borderRadius:14,padding:22,width:300}}>
+    <h3 style={{margin:"0 0 4px",color:"#f97316",fontSize:16}}>{titulo}</h3>
+    <p style={{margin:"0 0 12px",color:"#6b7280",fontSize:12}}>Ingresá el PIN de Raúl o de Claudia.</p>
+    <input type="password" inputMode="numeric" value={pin} autoFocus
+      onChange={e=>{setPin(e.target.value);setErr("");}}
+      onKeyDown={e=>{if(e.key==="Enter")validar();}}
+      style={{width:"100%",background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"10px",fontSize:18,fontWeight:700,letterSpacing:3,textAlign:"center",boxSizing:"border-box"}}/>
+    {err&&<div style={{color:"#ef4444",fontSize:12,marginTop:6}}>{err}</div>}
+    <div style={{display:"flex",gap:8,marginTop:14}}>
+      <button onClick={onClose} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:9,cursor:"pointer"}}>Cancelar</button>
+      <button onClick={validar} style={{flex:1,background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:9,cursor:"pointer",fontWeight:700}}>Ver</button>
+    </div>
+  </div>);
+}
+
+// ═══════════════════════════════════════════════════════
+// COBRO SEPARADO — dividir la cuenta de una mesa entre varios
+// ═══════════════════════════════════════════════════════
+function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, restantes, totalMesaGs, pagado, resto, onPagar, onDeshacer, onCobrarResto, onCerrarMesa, onClose }){
+  const pagos = mesa.pagosParciales||[];
+  const modoBloqueado = pagos.length>0 || !!mesa.divisionIgual;
+  const modoInicial = mesa.divisionIgual ? "iguales" : "consumo";
+  const [modo,setModo]=useState(modoInicial);
+  const modoActual = mesa.divisionIgual ? "iguales" : (pagos.length>0 ? "consumo" : modo);
+
+  // selección por consumo
+  const [sel,setSel]=useState({});
+  const selItems = restantes.map(r=>({...r, qty:Math.min(r.qty, sel[r._key]||0)})).filter(i=>i.qty>0);
+  const subtotalConsumo = selItems.reduce((s,i)=>s+i.precio*i.qty,0);
+  const setQty=(k,q,max)=>setSel(p=>({...p,[k]:Math.max(0,Math.min(max,q))}));
+
+  // partes iguales
+  const [nPersonasInput,setNPersonasInput]=useState(mesa.comensales||2);
+  const n = mesa.divisionIgual?.n || nPersonasInput;
+  const porPersona = n>=1 ? Math.round(totalMesaGs/n) : 0;
+  const partesPagadas = pagos.reduce((s,p)=>s+(p.partes||1),0);
+  const partesRestantes = Math.max(0, n - partesPagadas);
+  const [partesEstePago,setPartesEstePago]=useState(1);
+  const partesAhora = Math.min(partesEstePago, partesRestantes||1);
+  const esUltimoTramo = modoActual==="iguales" && partesAhora>=partesRestantes;
+  const montoIguales = modoActual==="iguales" ? (esUltimoTramo ? resto : porPersona*partesAhora) : 0;
+
+  const [nombre,setNombre]=useState("");
+  const [fase,setFase]=useState("elegir");
+  const [medioPago,setMedioPago]=useState("Efectivo");
+  const [propina,setPropina]=useState(0);
+  const [montoCobrado,setMontoCobrado]=useState("");
+  const [clienteCC,setClienteCC]=useState("");
+
+  const pagoSubtotal = modoActual==="iguales" ? montoIguales : subtotalConsumo;
+  const METODOS_EXC=["Tarjeta crédito","Tarjeta débito","Transferencia"];
+  const aplicaExc = METODOS_EXC.includes(medioPago);
+  const propinaExc = aplicaExc && montoCobrado!=="" ? Math.max(0, Number(montoCobrado)-pagoSubtotal) : 0;
+  const propinaFinal = aplicaExc ? propinaExc : propina;
+  const esCC = medioPago==="Crédito";
+  const totalEstePago = pagoSubtotal + propinaFinal;
+  const etiquetaPago = (nombre.trim()||`#${pagos.length+1}`);
+
+  const resetPago=()=>{ setSel({}); setNombre(""); setPartesEstePago(1); setFase("elegir"); setMedioPago("Efectivo"); setPropina(0); setMontoCobrado(""); setClienteCC(""); };
+  const irAPagar=()=>{
+    if(modoActual==="iguales" && n<2){ return; }
+    if(pagoSubtotal<=0) return;
+    setMontoCobrado(String(pagoSubtotal));
+    setFase("pagar");
+  };
+  const confirmar=()=>{
+    if(esCC && !clienteCC) return;
+    onPagar({
+      etiqueta: etiquetaPago,
+      items: modoActual==="iguales" ? [] : selItems,
+      montoFijo: modoActual==="iguales" ? montoIguales : null,
+      partes: modoActual==="iguales" ? partesAhora : null,
+      nPersonas: n,
+    }, medioPago, propinaFinal, esCC ? Number(clienteCC) : null);
+    resetPago();
+  };
+
+  return(<div style={{background:"#1a1d27",borderRadius:14,padding:22,width:420,maxHeight:"92vh",overflowY:"auto"}}>
+    <h3 style={{margin:"0 0 3px",color:"#a855f7",fontSize:17}}>Dividir cuenta — {sectorNombre} {mesa.numero}</h3>
+    <p style={{margin:"0 0 12px",color:"#6b7280",fontSize:11}}>{mesa.comensales}👤 · {mesa.mozo||"Sin mozo"}</p>
+
+    {/* progreso */}
+    <div style={{background:"#0f1117",borderRadius:9,padding:11,marginBottom:12}}>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:5}}><span style={{color:"#9ca3af"}}>Total de la mesa</span><b>{fmtGs(totalMesaGs)}</b></div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:5}}><span style={{color:"#9ca3af"}}>Pagado</span><b style={{color:"#22c55e"}}>{fmtGs(pagado)}</b></div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:13}}><span style={{color:"#9ca3af"}}>Falta</span><b style={{color:"#f97316"}}>{fmtGs(resto)}</b></div>
+    </div>
+
+    {/* pagos ya hechos */}
+    {pagos.length>0&&<div style={{marginBottom:12}}>
+      {pagos.map((p,idx)=>(
+        <div key={p.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,padding:"5px 0",borderBottom:"1px solid #2a2d3a"}}>
+          <span>✅ {p.etiqueta} · {p.medioPago}{p.propina>0?` · propina ${fmtGs(p.propina)}`:""}</span>
+          <span style={{display:"flex",gap:8,alignItems:"center"}}>
+            <b>{fmtGs(p.total)}</b>
+            {idx===pagos.length-1&&<button onClick={onDeshacer} style={{background:"#2a2d3a",border:"none",color:"#ef4444",borderRadius:5,padding:"3px 7px",cursor:"pointer",fontSize:10}}>deshacer</button>}
+          </span>
+        </div>
+      ))}
+    </div>}
+
+    {resto<=0 ? (
+      <div style={{textAlign:"center",padding:"10px 0"}}>
+        <p style={{color:"#22c55e",fontWeight:700,fontSize:14,margin:"0 0 10px"}}>✅ Todo cobrado</p>
+        <button onClick={onCerrarMesa} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:"9px 20px",cursor:"pointer",fontWeight:700}}>Cerrar mesa</button>
+      </div>
+    ) : fase==="elegir" ? (<>
+      {/* selector de modo */}
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <button disabled={modoBloqueado&&modoActual!=="consumo"} onClick={()=>setModo("consumo")}
+          style={{flex:1,background:modoActual==="consumo"?"#7c3aed":"#2a2d3a",border:"none",color:modoActual==="consumo"?"#fff":"#9ca3af",borderRadius:7,padding:"8px 4px",cursor:"pointer",fontSize:12,fontWeight:600,opacity:(modoBloqueado&&modoActual!=="consumo")?0.4:1}}>Por consumo</button>
+        <button disabled={modoBloqueado&&modoActual!=="iguales"} onClick={()=>setModo("iguales")}
+          style={{flex:1,background:modoActual==="iguales"?"#7c3aed":"#2a2d3a",border:"none",color:modoActual==="iguales"?"#fff":"#9ca3af",borderRadius:7,padding:"8px 4px",cursor:"pointer",fontSize:12,fontWeight:600,opacity:(modoBloqueado&&modoActual!=="iguales")?0.4:1}}>Partes iguales</button>
+      </div>
+
+      {modoActual==="consumo" ? (<>
+        <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:6}}>Marcá lo que paga esta persona</label>
+        <div style={{maxHeight:200,overflowY:"auto",marginBottom:10}}>
+          {restantes.length===0?<p style={{color:"#4b5563",fontSize:12}}>No queda nada por asignar.</p>:restantes.map(r=>{
+            const q=sel[r._key]||0;
+            return(<div key={r._key} style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:600}}>{r.nombre}{r.guarnicionElegida?` (${r.guarnicionElegida})`:""}</div>
+                <div style={{fontSize:10,color:"#6b7280"}}>{fmtGs(r.precio)} c/u · quedan {r.qty}</div>
+              </div>
+              <button onClick={()=>setQty(r._key,q-1,r.qty)} style={{background:"#2a2d3a",border:"none",color:"#e8e8e8",width:24,height:24,borderRadius:5,cursor:"pointer"}}>−</button>
+              <span style={{minWidth:18,textAlign:"center",fontWeight:700,fontSize:13}}>{q}</span>
+              <button onClick={()=>setQty(r._key,q+1,r.qty)} style={{background:"#7c3aed",border:"none",color:"#fff",width:24,height:24,borderRadius:5,cursor:"pointer"}}>+</button>
+            </div>);
+          })}
+        </div>
+        <button onClick={()=>setSel(Object.fromEntries(restantes.map(r=>[r._key,r.qty])))} style={{background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,marginBottom:10}}>Seleccionar todo lo que falta</button>
+      </>) : (<>
+        {!mesa.divisionIgual&&<div style={{marginBottom:10}}>
+          <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:5}}>¿Entre cuántas personas se divide?</label>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setNPersonasInput(v=>Math.max(2,v-1))} style={{background:"#2a2d3a",border:"none",color:"#e8e8e8",width:30,height:30,borderRadius:7,cursor:"pointer",fontSize:16}}>−</button>
+            <span style={{fontWeight:800,fontSize:20,minWidth:26,textAlign:"center"}}>{nPersonasInput}</span>
+            <button onClick={()=>setNPersonasInput(v=>v+1)} style={{background:"#7c3aed",border:"none",color:"#fff",width:30,height:30,borderRadius:7,cursor:"pointer",fontSize:16}}>+</button>
+            <span style={{fontSize:12,color:"#9ca3af",marginLeft:8}}>{fmtGs(porPersona)} c/u</span>
+          </div>
+        </div>}
+        {mesa.divisionIgual&&<p style={{fontSize:12,color:"#9ca3af",margin:"0 0 10px"}}>Dividido entre {n} · {fmtGs(porPersona)} por persona · faltan {partesRestantes} parte{partesRestantes!==1?"s":""}</p>}
+        <div style={{marginBottom:10}}>
+          <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:5}}>¿Cuántas partes paga esta persona?</label>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setPartesEstePago(v=>Math.max(1,v-1))} style={{background:"#2a2d3a",border:"none",color:"#e8e8e8",width:28,height:28,borderRadius:6,cursor:"pointer"}}>−</button>
+            <span style={{fontWeight:800,fontSize:16,minWidth:22,textAlign:"center"}}>{partesAhora}</span>
+            <button onClick={()=>setPartesEstePago(v=>Math.min(partesRestantes||1,v+1))} style={{background:"#7c3aed",border:"none",color:"#fff",width:28,height:28,borderRadius:6,cursor:"pointer"}}>+</button>
+          </div>
+        </div>
+      </>)}
+
+      <div style={{marginBottom:10}}>
+        <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:4}}>Nombre o número (para el ticket)</label>
+        <input value={nombre} onChange={e=>setNombre(e.target.value)} placeholder={`#${pagos.length+1}`}
+          style={{width:"100%",background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"8px 10px",fontSize:13,boxSizing:"border-box"}}/>
+      </div>
+
+      <div style={{background:"#0f1117",borderRadius:9,padding:11,marginBottom:12,display:"flex",justifyContent:"space-between",fontSize:16,fontWeight:900}}>
+        <span>Este pago</span><span style={{color:"#22c55e"}}>{fmtGs(pagoSubtotal)}</span>
+      </div>
+
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={onClose} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:10,cursor:"pointer"}}>Cerrar</button>
+        <button onClick={irAPagar} disabled={pagoSubtotal<=0||(modoActual==="iguales"&&n<2)}
+          style={{flex:2,background:pagoSubtotal>0?"#7c3aed":"#3a3a3a",border:"none",color:"#fff",borderRadius:7,padding:10,cursor:pagoSubtotal>0?"pointer":"not-allowed",fontWeight:800,fontSize:13}}>Cobrar {etiquetaPago} →</button>
+      </div>
+    </>) : (<>
+      {/* FASE PAGAR */}
+      <button onClick={()=>setFase("elegir")} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:12,padding:0,marginBottom:8}}>← volver a elegir</button>
+      <div style={{background:"#0f1117",borderRadius:9,padding:11,marginBottom:12}}>
+        <div style={{fontSize:12,color:"#9ca3af",marginBottom:3}}>Cobrando {etiquetaPago}</div>
+        <div style={{fontSize:18,fontWeight:900,color:esCC?"#ef4444":"#22c55e"}}>{fmtGs(totalEstePago)}</div>
+        {modoActual!=="iguales"&&selItems.length>0&&<div style={{fontSize:10,color:"#6b7280",marginTop:4}}>{selItems.map(i=>`${i.qty}x ${i.nombre}`).join(" · ")}</div>}
+      </div>
+
+      <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:6}}>Medio de pago</label>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5,marginBottom:12}}>
+        {MEDIOS_PAGO.map(mp=><button key={mp} onClick={()=>{setMedioPago(mp);if(METODOS_EXC.includes(mp))setMontoCobrado(String(pagoSubtotal));}}
+          style={{background:medioPago===mp?(mp==="Crédito"?"#ef4444":"#7c3aed"):"#2a2d3a",border:"none",color:medioPago===mp?"#fff":"#9ca3af",borderRadius:7,padding:"8px 4px",cursor:"pointer",fontSize:11,fontWeight:medioPago===mp?700:400}}>{mp==="Crédito"?"📋 Crédito":mp}</button>)}
+      </div>
+
+      {esCC ? (
+        <div style={{background:"#2e1a0a",border:"1px solid #ef4444",borderRadius:8,padding:11,marginBottom:12}}>
+          <label style={{fontSize:11,color:"#ef4444",display:"block",marginBottom:6,fontWeight:700}}>⚠️ Elegí el cliente:</label>
+          {clientes.length===0?<p style={{color:"#9ca3af",fontSize:12,margin:0}}>No hay clientes cargados.</p>
+          :clienteCC?(
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0f1117",borderRadius:7,padding:"8px 10px"}}>
+              <span style={{fontSize:13,fontWeight:700}}>{clientes.find(c=>String(c.id)===String(clienteCC))?.nombre}</span>
+              <button onClick={()=>setClienteCC("")} style={{background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11}}>Cambiar</button>
+            </div>
+          ):<BuscadorClientes clientes={clientes} maxAltura={140} onSeleccionar={c=>setClienteCC(String(c.id))}/>}
+        </div>
+      ) : aplicaExc ? (
+        <div style={{marginBottom:12,background:"#0f1117",border:"1px solid #22c55e",borderRadius:8,padding:11}}>
+          <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:5}}>Monto efectivamente cobrado</label>
+          <p style={{margin:"0 0 7px",color:"#6b7280",fontSize:10}}>Este pago: {fmtGs(pagoSubtotal)}. Si paga de más, el excedente va como propina para {mesa.mozo||"el mozo"}.</p>
+          <input type="number" value={montoCobrado} onChange={e=>setMontoCobrado(e.target.value)}
+            style={{width:"100%",background:"#1a1d27",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"9px 10px",fontSize:16,fontWeight:700,boxSizing:"border-box"}}/>
+          {propinaExc>0&&<div style={{marginTop:8,color:"#22c55e",fontSize:12,fontWeight:700}}>🎉 Propina: {fmtGs(propinaExc)} → {mesa.mozo||"el mozo"}</div>}
+        </div>
+      ) : (
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:5}}>Propina (opcional)</label>
+          <div style={{display:"flex",gap:5}}>
+            {[0,Math.round(pagoSubtotal*0.1),Math.round(pagoSubtotal*0.15)].map((val,i)=>(
+              <button key={i} onClick={()=>setPropina(val)} style={{flex:1,background:propina===val?"#7c3aed":"#2a2d3a",border:"none",color:propina===val?"#fff":"#9ca3af",borderRadius:7,padding:"7px 2px",cursor:"pointer",fontSize:11,fontWeight:600}}>{i===0?"Sin propina":i===1?"10%":"15%"}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>setFase("elegir")} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:10,cursor:"pointer"}}>Cancelar</button>
+        <button onClick={confirmar} disabled={esCC&&!clienteCC}
+          style={{flex:2,background:(esCC&&!clienteCC)?"#3a3a3a":(esCC?"#ef4444":"#22c55e"),border:"none",color:"#fff",borderRadius:7,padding:10,cursor:(esCC&&!clienteCC)?"not-allowed":"pointer",fontWeight:800,fontSize:13}}>
+          {esCC?"Registrar Crédito":"Confirmar e imprimir"}
+        </button>
+      </div>
+    </>)}
+  </div>);
+}
+
+function ModalCobro({ data, clientes, fmtGs, itemsResto, onCobrar, onClose }) {
   const [medioPago,setMedioPago]=useState("Efectivo");
   const [propina,setPropina]=useState(0);
   const [montoCobrado,setMontoCobrado]=useState("");
@@ -3660,7 +4076,7 @@ function ModalCobro({ data, clientes, fmtGs, onCobrar, onClose }) {
     }
     return "";
   });
-  const items=data.tipo==="mesa"?data.data.pedidos:data.data.items;
+  const items=(data.resto&&itemsResto)?itemsResto:(data.tipo==="mesa"?data.data.pedidos:data.data.items);
   const subtotal=items.reduce((s,i)=>s+i.precio*i.qty,0);
   const envio=data.tipo==="delivery"&&data.data.tipoEntrega==="delivery"?(data.data.costoEnvio||0):0;
   const montoCuenta=subtotal+envio;
@@ -3676,8 +4092,8 @@ function ModalCobro({ data, clientes, fmtGs, onCobrar, onClose }) {
     if(data.tipo==="mesa"&&METODOS_PROPINA_EXCEDENTE.includes(mp)) setMontoCobrado(String(montoCuenta));
   };
   return(<div style={{background:"#1a1d27",borderRadius:14,padding:24,width:380,maxHeight:"90vh",overflowY:"auto"}}>
-    <h3 style={{margin:"0 0 4px",color:"#f97316",fontSize:17}}>{data.tipo==="mesa"?`Cobrar ${SECTORES.find(s=>s.id===data.data.sector)?.nombre||""} ${data.data.numero}`:`Cobrar — ${data.data.cliente}`}</h3>
-    <p style={{margin:"0 0 12px",color:"#6b7280",fontSize:11}}>{data.tipo==="mesa"?`${data.data.comensales} comensales · ${data.data.mozo||""}`:data.data.direccion||""}</p>
+    <h3 style={{margin:"0 0 4px",color:"#f97316",fontSize:17}}>{data.tipo==="mesa"?`${data.resto?"Cobrar el resto — ":"Cobrar "}${SECTORES.find(s=>s.id===data.data.sector)?.nombre||""} ${data.data.numero}`:`Cobrar — ${data.data.cliente}`}</h3>
+    <p style={{margin:"0 0 12px",color:"#6b7280",fontSize:11}}>{data.tipo==="mesa"?`${data.resto?"Lo que falta de la división":`${data.data.comensales} comensales · ${data.data.mozo||""}`}`:data.data.direccion||""}</p>
     <div style={{marginBottom:12}}>
       {items.map((i,idx)=><div key={idx} style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#9ca3af",marginBottom:2}}><span>{i.nombre} x{i.qty}{i.guarnicionElegida?` (${i.guarnicionElegida})`:""}{i.nota?` — ${i.nota}`:""}</span><span>{fmtGs(i.precio*i.qty)}</span></div>)}
       <div style={{borderTop:"1px solid #2a2d3a",marginTop:7,paddingTop:7,display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:13}}><span>Subtotal</span><span>{fmtGs(subtotal)}</span></div>
