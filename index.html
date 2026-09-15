@@ -1088,6 +1088,12 @@ function App() {
 
   const [arqueoAbierto, setArqueoAbierto] = useState(null);
   const [modalArqueo,   setModalArqueo]   = useState(false);
+  // "Día operativo": mientras la noche esté abierta (Arqueo → Abrir noche),
+  // toda venta/ticket/deuda nueva y todo lo que se muestra como "de hoy" se
+  // ancla a la fecha en que se abrió esa noche — no a la fecha del reloj.
+  // Así, si se cierra después de medianoche, "Cerrar noche y arquear" sigue
+  // juntando TODA la noche en vez de perder lo vendido antes de las 00:00.
+  const diaOperativo = () => (arqueoAbierto && !arqueoAbierto.cerrado) ? arqueoAbierto.fecha : hoy();
   const [declaracion,   setDeclaracion]   = useState({});
   const [denomEfectivo, setDenomEfectivo] = useState({});
   const [observacionArqueo, setObservacionArqueo] = useState("");
@@ -1506,17 +1512,17 @@ function App() {
     const pagoId = Date.now() + Math.floor(Math.random()*100000);
 
     if(medioPago==="Crédito"){
-      const deuda={id:pagoId,origen:`${sectorNom} ${mesa.numero} · ${etiqueta}`,items:pagoMeta.items||[],total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
+      const deuda={id:pagoId,origen:`${sectorNom} ${mesa.numero} · ${etiqueta}`,items:pagoMeta.items||[],total,fecha:diaOperativo(),hora:ahora(),estado:"pendiente",pagos:[]};
       setClientes(prev=>prev.map(c=>c.id===clienteCCId?{...c,deudas:[...c.deudas,deuda]}:c));
       registrarLog("Crédito (pago separado)",`${sectorNom} #${mesa.numero} · ${etiqueta} → ${clientes.find(c=>c.id===clienteCCId)?.nombre}`);
     } else {
-      setVentas(prev=>[...prev,{id:pagoId,tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:pagoMeta.items||[],total,propina:propNum,medioPago,hora:ahora(),fecha:hoy(),mozo:mesa.mozo,cajero:usuario.nombre,parcial:true,grupo:grupoCobroMesa(mesa),etiquetaPago:etiqueta}]);
+      setVentas(prev=>[...prev,{id:pagoId,tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:pagoMeta.items||[],total,propina:propNum,medioPago,hora:ahora(),fecha:diaOperativo(),mozo:mesa.mozo,cajero:usuario.nombre,parcial:true,grupo:grupoCobroMesa(mesa),etiquetaPago:etiqueta}]);
       registrarLog("Cobro separado",`${sectorNom} #${mesa.numero} · ${etiqueta} · ${fmtGs(total)} · ${medioPago}`);
     }
 
     const pago={id:pagoId,etiqueta,items:pagoMeta.items||[],subtotal,propina:propNum,total,medioPago,partes:pagoMeta.partes||null,hora:ahora()};
     const divisionIgual = pagoMeta.montoFijo!=null
-      ? (mesa.divisionIgual || {n:pagoMeta.nPersonas||null})
+      ? (mesa.divisionIgual || (pagoMeta.tipoDivision==="libre" ? {tipo:"libre"} : {tipo:"iguales",n:pagoMeta.nPersonas||null}))
       : mesa.divisionIgual;
     // Se calcula ACÁ (con el estado actual + este pago) si la división quedó
     // saldada — no se puede confiar en leerlo después del setMesas asíncrono.
@@ -1526,7 +1532,7 @@ function App() {
     // ticket de ESTE pago: se manda directo a la impresora y queda para
     // reimprimir en Caja. No abre el modal en pantalla para no cortar el
     // flujo de la división (el siguiente comensal ya está esperando).
-    const ticket={tipo:"svf",sector:sectorNom,numero:mesa.numero,mozo:mesa.mozo,items:pagoMeta.items||[],total,hora:ahora(),fecha:hoy(),pagoSeparado:etiqueta};
+    const ticket={tipo:"svf",sector:sectorNom,numero:mesa.numero,mozo:mesa.mozo,items:pagoMeta.items||[],total,hora:ahora(),fecha:diaOperativo(),pagoSeparado:etiqueta};
     enviarAImpresora(ticket);
     setHistorialTickets(prev=>[...prev,{...ticket,id:pagoId}]);
 
@@ -1538,7 +1544,7 @@ function App() {
       showToast(`Mesa cerrada — cobro separado completo`);
     } else {
       setMesas(prev=>prev.map(m=>m.id===mesa.id
-        ? {...m, pagosParciales:[...(m.pagosParciales||[]), pago], divisionIgual: pagoMeta.montoFijo!=null ? (m.divisionIgual||{n:pagoMeta.nPersonas||null}) : m.divisionIgual}
+        ? {...m, pagosParciales:[...(m.pagosParciales||[]), pago], divisionIgual}
         : m));
       showToast(`${etiqueta} cobrado — ${fmtGs(total)}`);
     }
@@ -1715,13 +1721,22 @@ function App() {
     // original (los pagos separados previos no descuentan stock por sí solos).
     descontarStockPorVenta(mesa.pedidos);
     const extraDiv = esResto ? {parcial:true,grupo:grupoCobroMesa(mesa),etiquetaPago:"Resto"} : {};
+    // Si se cobra directo (sin haber pedido antes el ticket de cuenta), o si
+    // es el resto final de una división, igual queda un ticket impreso y
+    // disponible para reimprimir en Caja — antes solo quedaba cuando se
+    // pasaba primero por "Pedir cuenta".
+    if(esResto || mesa.estado!=="cuenta"){
+      const ticketCierre={tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:pedidosCobro,total,hora:ahora(),fecha:diaOperativo(),...(esResto?{pagoSeparado:"Resto"}:{})};
+      enviarAImpresora(ticketCierre);
+      setHistorialTickets(prev=>[...prev,{...ticketCierre,id:Date.now()+Math.floor(Math.random()*100000)}]);
+    }
     if(medioPago==="Crédito"&&clienteCCId){
-      const deuda={id:Date.now(),origen:`${SECTORES.find(s=>s.id===mesa.sector)?.nombre} ${mesa.numero}${esResto?" · Resto":""}`,items:pedidosCobro,total,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
+      const deuda={id:Date.now(),origen:`${SECTORES.find(s=>s.id===mesa.sector)?.nombre} ${mesa.numero}${esResto?" · Resto":""}`,items:pedidosCobro,total,fecha:diaOperativo(),hora:ahora(),estado:"pendiente",pagos:[]};
       setClientes(prev=>prev.map(c=>c.id===clienteCCId?{...c,deudas:[...c.deudas,deuda]}:c));
       registrarLog("Crédito",`Mesa #${mesa.numero} → ${clientes.find(c=>c.id===clienteCCId)?.nombre}`);
       showToast("Deuda cargada a Crédito","warn");
     } else {
-      setVentas(prev=>[...prev,{id:Date.now(),tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:pedidosCobro,total,propina,medioPago,hora:ahora(),fecha:hoy(),mozo:mesa.mozo,cajero:usuario.nombre,...extraDiv}]);
+      setVentas(prev=>[...prev,{id:Date.now(),tipo:"mesa",sector:mesa.sector,mesa:mesa.numero,items:pedidosCobro,total,propina,medioPago,hora:ahora(),fecha:diaOperativo(),mozo:mesa.mozo,cajero:usuario.nombre,...extraDiv}]);
       registrarLog("Cobro mesa",`${mesa.sector} #${mesa.numero} · ${fmtGs(total)} · ${medioPago}${esResto?" (resto de división)":""}`);
       showToast(`Mesa cerrada — ${fmtGs(total)}`);
     }
@@ -1731,10 +1746,10 @@ function App() {
 
   // Ticket "Sin Valor Fiscal" al pedir cuenta
   const ticketSVF = (mesa) => {
-    const ticketCuenta = {tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:mesa.pedidos,total:totalMesa(mesa),hora:ahora(),fecha:hoy()};
+    const ticketCuenta = {tipo:"svf",sector:SECTORES.find(s=>s.id===mesa.sector)?.nombre,numero:mesa.numero,mozo:mesa.mozo,items:mesa.pedidos,total:totalMesa(mesa),hora:ahora(),fecha:diaOperativo()};
     setTicketModal(ticketCuenta);
     enviarAImpresora(ticketCuenta);
-    setHistorialTickets(prev=>[...prev,{...ticketCuenta,id:Date.now(),fecha:hoy()}]);
+    setHistorialTickets(prev=>[...prev,{...ticketCuenta,id:Date.now(),fecha:diaOperativo()}]);
     setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"cuenta"}:m));
   };
 
@@ -1742,10 +1757,11 @@ function App() {
   const ticketSVFDelivery = (pedido) => {
     const envio = pedido.tipoEntrega==="delivery" ? (pedido.costoEnvio||0) : 0;
     const total = pedido.items.reduce((s,i)=>s+i.precio*i.qty,0)+envio;
-    const ticketCuentaDelivery = {tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora(),fecha:hoy()};
+    const ticketCuentaDelivery = {tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora(),fecha:diaOperativo()};
     setTicketModal(ticketCuentaDelivery);
     enviarAImpresora(ticketCuentaDelivery);
-    setHistorialTickets(prev=>[...prev,{...ticketCuentaDelivery,id:Date.now(),fecha:hoy()}]);
+    setHistorialTickets(prev=>[...prev,{...ticketCuentaDelivery,id:Date.now(),fecha:diaOperativo()}]);
+    setPedidosDelivery(prev=>prev.map(p=>p.id===pedido.id?{...p,ticketImpreso:true}:p));
   };
 
   // ── Delivery rápido ───────────────────────────────────
@@ -1897,7 +1913,7 @@ function App() {
   const crearDeliveryRap = () => {
     if(!deliveryRapForm.cliente.trim()){showToast("Ingresá o seleccioná el cliente","warn");return;}
     const clienteDeliveryId = obtenerOcrearClienteDelivery(deliveryRapForm.cliente,deliveryRapForm.telefono,deliveryRapForm.direccion);
-    const nuevo={id:Date.now(),...deliveryRapForm,clienteDeliveryId,estado:"pendiente",items:[],enviados:[],costoEnvio:0,hora:ahora(),fecha:hoy()};
+    const nuevo={id:Date.now(),...deliveryRapForm,clienteDeliveryId,estado:"pendiente",items:[],enviados:[],costoEnvio:0,hora:ahora(),fecha:diaOperativo()};
     setPedidosDelivery(prev=>[...prev,nuevo]);
     setDeliveryActivo(nuevo.id);
     setDeliveryRapForm({cliente:"",telefono:"",direccion:"",tipoEntrega:"delivery"});
@@ -1945,16 +1961,23 @@ function App() {
     const envio = pedido.tipoEntrega==="delivery" ? (pedido.costoEnvio||0) : 0;
     const total=pedido.items.reduce((s,i)=>s+i.precio*i.qty,0)+envio;
     descontarStockPorVenta(pedido.items);
+    // Si se cobra directo, sin haber pasado antes por "🧾 Ticket cliente",
+    // igual queda un ticket impreso y disponible para reimprimir en Caja.
+    if(!pedido.ticketImpreso){
+      const ticketCierre={tipo:"svf",esDelivery:true,tipoEntrega:pedido.tipoEntrega,cliente:pedido.cliente,telefono:pedido.telefono,items:pedido.items,envio,total,hora:ahora(),fecha:diaOperativo()};
+      enviarAImpresora(ticketCierre);
+      setHistorialTickets(prev=>[...prev,{...ticketCierre,id:Date.now()+Math.floor(Math.random()*100000)}]);
+    }
     if(medioPago==="Crédito"&&clienteCCId){
-      const deuda={id:Date.now(),origen:`Delivery ${pedido.cliente}`,items:pedido.items,total,envio,fecha:hoy(),hora:ahora(),estado:"pendiente",pagos:[]};
+      const deuda={id:Date.now(),origen:`Delivery ${pedido.cliente}`,items:pedido.items,total,envio,fecha:diaOperativo(),hora:ahora(),estado:"pendiente",pagos:[]};
       setClientes(prev=>prev.map(c=>c.id===clienteCCId?{...c,deudas:[...c.deudas,deuda]}:c));
     } else {
-      setVentas(prev=>[...prev,{id:Date.now(),tipo:"delivery",cliente:pedido.cliente,items:pedido.items,total,envio,medioPago,hora:ahora(),fecha:hoy(),cajero:usuario.nombre}]);
+      setVentas(prev=>[...prev,{id:Date.now(),tipo:"delivery",cliente:pedido.cliente,items:pedido.items,total,envio,medioPago,hora:ahora(),fecha:diaOperativo(),cajero:usuario.nombre}]);
     }
     // Se registra el viaje SIEMPRE, sin importar si se cobró o quedó a crédito,
     // para que el total de "A pagar Delivery" y el historial reflejen todos los viajes reales.
     if(pedido.tipoEntrega==="delivery"){
-      setEnviosDelivery(prev=>[...prev,{id:Date.now(),cliente:pedido.cliente,monto:envio,medioPago,fecha:hoy(),hora:ahora(),cajero:usuario.nombre}]);
+      setEnviosDelivery(prev=>[...prev,{id:Date.now(),cliente:pedido.cliente,monto:envio,medioPago,fecha:diaOperativo(),hora:ahora(),cajero:usuario.nombre}]);
     }
     registrarLog("Cobro delivery",`${pedido.cliente} · ${fmtGs(total)}`);
     setPedidosDelivery(prev=>prev.filter(p=>p.id!==pedido.id));
@@ -1974,12 +1997,12 @@ function App() {
       const deudas=c.deudas.map(d=>{
         if(d.id!==deudaId)return d;
         const pagado=d.pagos.reduce((s,p)=>s+p.monto,0)+monto;
-        return {...d,estado:pagado>=d.total?"saldado":"parcial",pagos:[...d.pagos,{id:Date.now(),monto,medioPago,fecha:hoy(),hora:ahora()}]};
+        return {...d,estado:pagado>=d.total?"saldado":"parcial",pagos:[...d.pagos,{id:Date.now(),monto,medioPago,fecha:diaOperativo(),hora:ahora()}]};
       });
       return {...c,deudas};
     }));
     const c=clientes.find(c=>c.id===clienteId);
-    setVentas(prev=>[...prev,{id:Date.now(),tipo:"cc",cliente:c?.nombre,total:monto,medioPago,hora:ahora(),fecha:hoy(),cajero:usuario.nombre}]);
+    setVentas(prev=>[...prev,{id:Date.now(),tipo:"cc",cliente:c?.nombre,total:monto,medioPago,hora:ahora(),fecha:diaOperativo(),cajero:usuario.nombre}]);
     setModalSaldar(null);showToast("Pago registrado");
   };
   const enviarWhatsApp=(cliente)=>{
@@ -2092,22 +2115,31 @@ function App() {
   // ── Arqueo ────────────────────────────────────────────
   const abrirArqueo=fondo=>{
     setArqueoAbierto({id:Date.now(),fecha:hoy(),inicio:ahora(),fondoInicio:Number(fondo),cajero:usuario.nombre,cerrado:false});
-    registrarLog("Arqueo abierto",`Fondo: ${fmtGs(fondo)}`);setModalArqueo(false);showToast("Turno abierto");
+    registrarLog("Arqueo abierto",`Fondo: ${fmtGs(fondo)}`);setModalArqueo(false);showToast("Noche abierta");
   };
   const cerrarArqueo=()=>{
-    const vt=ventas.filter(v=>v.fecha===hoy());
+    // Se usa la fecha con la que se abrió ESTA noche (no la del reloj en
+    // este instante) — así, si se cierra después de medianoche, se sigue
+    // juntando toda la noche y no solo lo vendido después de las 00:00.
+    const fechaTurno = arqueoAbierto.fecha;
+    const vt=ventas.filter(v=>v.fecha===fechaTurno);
     const propinasTurno = vt.filter(v=>v.tipo==="mesa"&&v.propina>0);
     const totalPropinas = propinasTurno.reduce((s,v)=>s+v.propina,0);
     const propinasPorMozo = {};
     propinasTurno.forEach(v=>{ const m=v.mozo||"Sin asignar"; propinasPorMozo[m]=(propinasPorMozo[m]||0)+v.propina; });
+
+    // Lo que se le paga al delivery por viaje sale de la misma caja física,
+    // en efectivo, se haya cobrado o no esa entrega — por eso también se
+    // resta del efectivo esperado, igual que las propinas.
+    const totalEnvioTurno = enviosDelivery.filter(e=>e.fecha===fechaTurno).reduce((s,e)=>s+(e.monto||0),0);
 
     const efectivoDeclarado = DENOMINACIONES.reduce((s,d)=>s+d*(denomEfectivo[d]||0),0);
     const declaracionFinal = {...declaracion, Efectivo: efectivoDeclarado};
 
     const resumen=MEDIOS_PAGO.filter(m=>m!=="Crédito").map(m=>{
       let sistema = vt.filter(v=>v.medioPago===m).reduce((s,v)=>s+v.total,0);
-      // El efectivo esperado en caja resta las propinas que ya se le pagaron al mozo en mano
-      if(m==="Efectivo") sistema = sistema - totalPropinas;
+      // El efectivo esperado en caja resta las propinas pagadas en mano y lo pagado al delivery por viaje
+      if(m==="Efectivo") sistema = sistema - totalPropinas - totalEnvioTurno;
       return { medio:m, sistema, declarado:declaracionFinal[m]||0 };
     }).filter(r=>r.sistema>0||r.declarado>0).map(r=>({...r,diferencia:r.declarado-r.sistema}));
 
@@ -2117,7 +2149,7 @@ function App() {
 
     setArqueoAbierto(prev=>({...prev,cerrado:true,fin:ahora(),cerradoPor:usuario.nombre,cerradoPorRol:usuario.rol,
       resumen,totalSistema:ts,totalDeclarado:td,totalDif:dif,superaUmbral,
-      propinasPorMozo,totalPropinas,observacion:observacionArqueo,denomEfectivo:{...denomEfectivo}}));
+      propinasPorMozo,totalPropinas,totalEnvio:totalEnvioTurno,observacion:observacionArqueo,denomEfectivo:{...denomEfectivo}}));
     setHistorialTickets([]); // Se borran los tickets de cuenta reimprimibles al cerrar caja
 
     // El detalle completo (incluye la diferencia) solo es visible luego en Auditoría, que ya es dueño-only
@@ -2150,8 +2182,8 @@ function App() {
       if (idxA !== idxB) return idxA - idxB;
       return a.nombre.localeCompare(b.nombre, "es", { sensitivity: "base" });
     });
-  const ventasHoy   = ventas.filter(v=>v.fecha===hoy());
-  const ticketsHoy  = (historialTickets||[]).filter(t=>t.fecha===hoy());
+  const ventasHoy   = ventas.filter(v=>v.fecha===diaOperativo());
+  const ticketsHoy  = (historialTickets||[]).filter(t=>t.fecha===diaOperativo());
   const totalHoy    = ventasHoy.reduce((s,v)=>s+v.total,0);   // lo efectivamente cobrado (efectivo + tarjetas + transferencia + QR)
   // "Mesas" cuenta mesas distintas: los pagos separados de una misma mesa
   // (mismo `grupo`) cuentan como una sola.
@@ -2160,7 +2192,7 @@ function App() {
     const grupos  = new Set(ventasHoy.filter(v=>v.tipo==="mesa" && v.parcial && v.grupo).map(v=>v.grupo)).size;
     return sueltas + grupos;
   })();
-  const enviosDeliveryHoy = enviosDelivery.filter(e=>e.fecha===hoy());
+  const enviosDeliveryHoy = enviosDelivery.filter(e=>e.fecha===diaOperativo());
   const totalEnvioHoy = enviosDeliveryHoy.reduce((s,e)=>s+(e.monto||0),0);
   const historialEnviosPorDia = Object.values(enviosDelivery.reduce((acc,e)=>{
     if(!acc[e.fecha]) acc[e.fecha]={fecha:e.fecha,total:0,viajes:0};
@@ -2173,9 +2205,13 @@ function App() {
   const propinasPorMozoHoy = {};
   propinasHoy.forEach(v=>{ const m=v.mozo||"Sin asignar"; propinasPorMozoHoy[m]=(propinasPorMozoHoy[m]||0)+v.propina; });
   const porMedioPago= MEDIOS_PAGO.filter(m=>m!=="Crédito").map(m=>({medio:m,total:ventasHoy.filter(v=>v.medioPago===m).reduce((s,v)=>s+v.total,0),cant:ventasHoy.filter(v=>v.medioPago===m).length})).filter(m=>m.cant>0);
+  // Detalle ticket por ticket de tarjetas y transferencia, para cotejar contra el POS/banco
+  const detalleTarjetasTransf = ["Tarjeta débito","Tarjeta crédito","Transferencia"]
+    .map(m=>({medio:m, ventas:[...ventasHoy].filter(v=>v.medioPago===m).sort((a,b)=>a.hora.localeCompare(b.hora))}))
+    .filter(g=>g.ventas.length>0);
   // Fiado del día: se toma de las deudas cargadas hoy en Cuenta Corriente
   // (las ventas a crédito NO entran en `ventas`, van directo al cliente).
-  const deudasHoy = (clientes||[]).flatMap(c => (c.deudas||[]).filter(d=>d.fecha===hoy()).map(d=>({...d, clienteNombre:c.nombre})));
+  const deudasHoy = (clientes||[]).flatMap(c => (c.deudas||[]).filter(d=>d.fecha===diaOperativo()).map(d=>({...d, clienteNombre:c.nombre})));
   const totalCreditoHoy = deudasHoy.reduce((s,d)=>s+(d.total||0),0);
   const totalVendidoHoy = totalHoy + totalCreditoHoy;   // todo lo facturado hoy, cobrado + fiado
   const mostrarTotalesCaja = esDueno() || totalesCajaVisibles;   // "Total del día" / "Vendido hoy": solo dueños (o con PIN)
@@ -2961,7 +2997,7 @@ function App() {
         {/* ══ CAJA ══ */}
         {seccion==="caja"&&(
           <div>
-            <h2 style={{margin:"0 0 14px"}}>Caja del día — {hoy()}</h2>
+            <h2 style={{margin:"0 0 14px"}}>Caja del día — {diaOperativo()}</h2>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(150px,1fr))",gap:11,marginBottom:mostrarTotalesCaja&&!esDueno()?8:20}}>
               {mostrarTotalesCaja?(<>
                 <StatCard label="Total del día (cobrado)" value={fmtGs(totalHoy)}                          color="#22c55e"/>
@@ -2984,12 +3020,12 @@ function App() {
               <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:220,overflowY:"auto"}}>
                 {historialEnviosPorDia.map(d=>(
                   <div key={d.fecha} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"6px 0",borderBottom:"1px solid #2a2d3a"}}>
-                    <span>{d.fecha}{d.fecha===hoy()?" (hoy)":""} · {d.viajes} viaje{d.viajes>1?"s":""}</span>
+                    <span>{d.fecha}{d.fecha===diaOperativo()?" (hoy)":""} · {d.viajes} viaje{d.viajes>1?"s":""}</span>
                     <span style={{fontWeight:700,color:"#06b6d4"}}>{fmtGs(d.total)}</span>
                   </div>
                 ))}
               </div>
-              <p style={{margin:"10px 0 0",fontSize:10,color:"#6b7280"}}>Incluye todos los viajes de delivery, sin importar el medio de pago (incluso los que quedaron a crédito).</p>
+              <p style={{margin:"10px 0 0",fontSize:10,color:"#6b7280"}}>Incluye todos los viajes de delivery, sin importar el medio de pago (incluso los que quedaron a crédito). Se paga en efectivo al repartidor y ya se resta del efectivo esperado al cerrar el Arqueo.</p>
             </div>}
             {deudasHoy.length>0&&<div style={{background:"#1a1d27",border:"1px solid #ef4444",borderRadius:13,padding:16,marginBottom:18}}>
               <h3 style={{margin:"0 0 11px",fontSize:14,color:"#ef4444"}}>🧾 Ventas a crédito (fiado) de hoy</h3>
@@ -3016,6 +3052,29 @@ function App() {
                   </div>);
                 })}
               </div>
+            </div>}
+            {detalleTarjetasTransf.length>0&&<div style={{background:"#1a1d27",border:"1px solid #2a2d3a",borderRadius:13,padding:16,marginBottom:18}}>
+              <h3 style={{margin:"0 0 11px",fontSize:14}}>🔍 Detalle tarjetas y transferencia (control cruzado)</h3>
+              {detalleTarjetasTransf.map(g=>(
+                <div key={g.medio} style={{marginBottom:14}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:700,color:"#f97316",marginBottom:6}}>
+                    <span>{g.medio}</span>
+                    <span>{g.ventas.length} ticket{g.ventas.length!==1?"s":""} · {fmtGs(g.ventas.reduce((s,v)=>s+v.total,0))}</span>
+                  </div>
+                  <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                    {g.ventas.map(v=>(
+                      <div key={v.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 10px",background:"#0f1117",borderRadius:7}}>
+                        <div>
+                          <div style={{fontSize:12,fontWeight:600}}>{v.tipo==="mesa"?`${SECTORES.find(s=>s.id===v.sector)?.nombre||""} ${v.mesa}`:v.tipo==="delivery"?`Delivery — ${v.cliente}`:`Pago CC — ${v.cliente}`}{v.etiquetaPago?` · ${v.etiquetaPago}`:""}</div>
+                          <div style={{fontSize:10,color:"#6b7280"}}>{v.hora} · {v.cajero}</div>
+                        </div>
+                        <b style={{fontSize:13,color:"#22c55e"}}>{fmtGs(v.total)}</b>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <p style={{margin:"4px 0 0",fontSize:10,color:"#6b7280"}}>Cotejá cada ticket contra el comprobante del POS o el extracto del banco para ubicar la diferencia.</p>
             </div>}
             {totalPropinasHoy>0&&<div style={{background:"#1a1d27",border:"1px solid #22c55e",borderRadius:13,padding:16,marginBottom:18}}>
               <h3 style={{margin:"0 0 11px",fontSize:14,color:"#22c55e"}}>💰 Propinas del turno (por excedente en tarjeta/transferencia)</h3>
@@ -3092,7 +3151,7 @@ function App() {
                 {ventasPorDiaRep.map(d=>(
                   <div key={d.fecha}>
                     <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
-                      <span style={{color:"#9ca3af"}}>{d.fecha}{d.fecha===hoy()?" (hoy)":""} · {d.cant} venta{d.cant>1?"s":""}</span>
+                      <span style={{color:"#9ca3af"}}>{d.fecha}{d.fecha===diaOperativo()?" (hoy)":""} · {d.cant} venta{d.cant>1?"s":""}</span>
                       <span style={{fontWeight:800,color:"#22c55e"}}>{fmtGs(d.total)}</span>
                     </div>
                     <div style={{background:"#0f1117",borderRadius:4,height:7,overflow:"hidden"}}>
@@ -3155,16 +3214,16 @@ function App() {
         {seccion==="arqueo"&&(
           <div>
             <h2 style={{margin:"0 0 4px"}}>Arqueo de Caja</h2>
-            <p style={{color:"#6b7280",fontSize:12,margin:"0 0 18px"}}>Control cruzado entre sistema y caja física.</p>
+            <p style={{color:"#6b7280",fontSize:12,margin:"0 0 18px"}}>Control cruzado entre sistema y caja física. Abrí la noche al empezar y cerrala recién cuando termine el servicio, aunque sea de madrugada — el sistema va a seguir juntando todo bajo esa misma noche hasta que la cierres.</p>
             {!arqueoAbierto?(
               <div style={{textAlign:"center",padding:50}}>
                 <div style={{fontSize:40,marginBottom:10}}>🔒</div>
-                <button onClick={()=>setModalArqueo(true)} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:11,padding:"12px 28px",cursor:"pointer",fontWeight:800,fontSize:14}}>Abrir turno</button>
+                <button onClick={()=>setModalArqueo(true)} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:11,padding:"12px 28px",cursor:"pointer",fontWeight:800,fontSize:14}}>🌙 Abrir noche</button>
               </div>
             ):!arqueoAbierto.cerrado?(
               <div>
                 <div style={{background:"#1a2e1a",border:"1px solid #22c55e",borderRadius:11,padding:14,marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <div><div style={{fontWeight:700,color:"#22c55e"}}>🟢 Turno abierto</div><div style={{fontSize:11,color:"#6b7280"}}>Desde {arqueoAbierto.inicio} · Cajero: {arqueoAbierto.cajero} · Fondo: {fmtGs(arqueoAbierto.fondoInicio)}</div></div>
+                  <div><div style={{fontWeight:700,color:"#22c55e"}}>🟢 Noche abierta — {arqueoAbierto.fecha}</div><div style={{fontSize:11,color:"#6b7280"}}>Desde {arqueoAbierto.inicio} · Cajero: {arqueoAbierto.cajero} · Fondo: {fmtGs(arqueoAbierto.fondoInicio)}</div></div>
                   {usuario.rol==="dueno"&&<div style={{fontSize:17,fontWeight:900,color:"#22c55e"}}>{fmtGs(totalHoy)}</div>}
                 </div>
 
@@ -3175,7 +3234,7 @@ function App() {
                   <div style={{background:"#0f1117",borderRadius:9,padding:14,marginBottom:14}}>
                     <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
                       <span style={{fontSize:13,fontWeight:700}}>💵 Efectivo (contar por denominación)</span>
-                      {usuario.rol==="dueno"&&<span style={{fontSize:10,color:"#6b7280"}}>Sistema: {fmtGs(ventasHoy.filter(v=>v.medioPago==="Efectivo").reduce((s,v)=>s+v.total,0)-totalPropinasHoy)}</span>}
+                      {usuario.rol==="dueno"&&<span style={{fontSize:10,color:"#6b7280"}}>Sistema: {fmtGs(ventasHoy.filter(v=>v.medioPago==="Efectivo").reduce((s,v)=>s+v.total,0)-totalPropinasHoy-totalEnvioHoy)}</span>}
                     </div>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(130px,1fr))",gap:8,marginBottom:10}}>
                       {DENOMINACIONES.map(d=>(
@@ -3211,7 +3270,7 @@ function App() {
                   </div>
                 </div>
 
-                <button onClick={cerrarArqueo} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:11,padding:"12px 26px",cursor:"pointer",fontWeight:800,fontSize:14}}>Cerrar turno y arquear</button>
+                <button onClick={cerrarArqueo} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:11,padding:"12px 26px",cursor:"pointer",fontWeight:800,fontSize:14}}>🌙 Cerrar noche y arquear</button>
               </div>
             ):usuario.rol!=="dueno"?(
               <div style={{textAlign:"center",padding:60}}>
@@ -3233,7 +3292,7 @@ function App() {
                       </tbody>
                     </table>
                   </div>
-                  <p style={{margin:"10px 0 0",fontSize:10,color:"#6b7280"}}>El efectivo "Sistema" ya tiene restadas las propinas pagadas en mano ({fmtGs(arqueoAbierto.totalPropinas||0)}).</p>
+                  <p style={{margin:"10px 0 0",fontSize:10,color:"#6b7280"}}>El efectivo "Sistema" ya tiene restadas las propinas pagadas en mano ({fmtGs(arqueoAbierto.totalPropinas||0)}) y lo pagado al delivery por viaje ({fmtGs(arqueoAbierto.totalEnvio||0)}).</p>
                   {arqueoAbierto.observacion&&<div style={{background:"#0f1117",borderRadius:9,padding:11,marginTop:12}}><div style={{fontSize:10,color:"#9ca3af",marginBottom:3}}>Observación del cajero:</div><div style={{fontSize:12}}>{arqueoAbierto.observacion}</div></div>}
                   {arqueoAbierto.totalDif<0&&<div style={{background:"#2e1a1a",border:"1px solid #ef4444",borderRadius:9,padding:"11px 14px",marginTop:12,color:"#ef4444",fontWeight:700,fontSize:13}}>⚠️ Faltante de {fmtGs(Math.abs(arqueoAbierto.totalDif))}. Revisá la auditoría.</div>}
                   {arqueoAbierto.superaUmbral&&(
@@ -3256,7 +3315,7 @@ function App() {
                   </div>
                 )}
 
-                <button onClick={()=>{setArqueoAbierto(null);setDeclaracion({});setDenomEfectivo({});setObservacionArqueo("");}} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:11,padding:"11px 24px",cursor:"pointer",fontWeight:700,fontSize:13}}>Nuevo turno</button>
+                <button onClick={()=>{setArqueoAbierto(null);setDeclaracion({});setDenomEfectivo({});setObservacionArqueo("");}} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:11,padding:"11px 24px",cursor:"pointer",fontWeight:700,fontSize:13}}>🌙 Nueva noche</button>
               </div>
             )}
           </div>
@@ -3351,7 +3410,7 @@ function App() {
 
       {modalPago&&<ModalOverlay onClose={()=>setModalPago(null)}><ModalCobro data={modalPago} clientes={clientes} fmtGs={fmtGs}
         itemsResto={!modalPago.resto?null:(modalPago.data.divisionIgual
-          ? [{nombre:"Resto de la división (partes iguales)", precio:Math.max(0,totalMesa(modalPago.data)-totalPagadoParcial(modalPago.data)), qty:1}]
+          ? [{nombre:`Resto de la división (${(modalPago.data.divisionIgual.tipo||"iguales")==="libre"?"por monto":"partes iguales"})`, precio:Math.max(0,totalMesa(modalPago.data)-totalPagadoParcial(modalPago.data)), qty:1}]
           : itemsRestantesMesa(modalPago.data))}
         onCobrar={(mp,prop,ccId)=>{if(modalPago.tipo==="mesa")cerrarCuenta(modalPago.data,mp,prop,ccId,!!modalPago.resto);else cerrarDelivery(modalPago.data,mp,ccId);}}
         onClose={()=>setModalPago(null)}/></ModalOverlay>}
@@ -3860,10 +3919,14 @@ function PinDueno({ usuarios, titulo, onOk, onClose }){
 // ═══════════════════════════════════════════════════════
 function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, restantes, totalMesaGs, pagado, resto, onPagar, onDeshacer, onCobrarResto, onCerrarMesa, onClose }){
   const pagos = mesa.pagosParciales||[];
+  // divisionIgual guarda {tipo:"iguales",n} o {tipo:"libre"} — mesas ya en
+  // curso de una división guardada antes de este cambio no tienen `tipo`,
+  // por eso se asume "iguales" cuando falta (era el único modo por monto).
+  const tipoDivisionMesa = mesa.divisionIgual ? (mesa.divisionIgual.tipo||"iguales") : null;
   const modoBloqueado = pagos.length>0 || !!mesa.divisionIgual;
-  const modoInicial = mesa.divisionIgual ? "iguales" : "consumo";
+  const modoInicial = tipoDivisionMesa || "consumo";
   const [modo,setModo]=useState(modoInicial);
-  const modoActual = mesa.divisionIgual ? "iguales" : (pagos.length>0 ? "consumo" : modo);
+  const modoActual = tipoDivisionMesa || (pagos.length>0 ? "consumo" : modo);
 
   // selección por consumo
   const [sel,setSel]=useState({});
@@ -3882,6 +3945,10 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
   const esUltimoTramo = modoActual==="iguales" && partesAhora>=partesRestantes;
   const montoIguales = modoActual==="iguales" ? (esUltimoTramo ? resto : porPersona*partesAhora) : 0;
 
+  // monto libre: cada persona paga lo que le toque, sin atarlo a productos ni a partes
+  const [montoLibreInput,setMontoLibreInput]=useState("");
+  const montoLibre = Math.max(0, Math.round(Number(montoLibreInput)||0));
+
   const [nombre,setNombre]=useState("");
   const [fase,setFase]=useState("elegir");
   const [medioPago,setMedioPago]=useState("Efectivo");
@@ -3889,7 +3956,7 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
   const [montoCobrado,setMontoCobrado]=useState("");
   const [clienteCC,setClienteCC]=useState("");
 
-  const pagoSubtotal = modoActual==="iguales" ? montoIguales : subtotalConsumo;
+  const pagoSubtotal = modoActual==="iguales" ? montoIguales : modoActual==="libre" ? montoLibre : subtotalConsumo;
   const METODOS_EXC=["Tarjeta crédito","Tarjeta débito","Transferencia"];
   const aplicaExc = METODOS_EXC.includes(medioPago);
   const propinaExc = aplicaExc && montoCobrado!=="" ? Math.max(0, Number(montoCobrado)-pagoSubtotal) : 0;
@@ -3898,7 +3965,7 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
   const totalEstePago = pagoSubtotal + propinaFinal;
   const etiquetaPago = (nombre.trim()||`#${pagos.length+1}`);
 
-  const resetPago=()=>{ setSel({}); setNombre(""); setPartesEstePago(1); setFase("elegir"); setMedioPago("Efectivo"); setPropina(0); setMontoCobrado(""); setClienteCC(""); };
+  const resetPago=()=>{ setSel({}); setNombre(""); setPartesEstePago(1); setMontoLibreInput(""); setFase("elegir"); setMedioPago("Efectivo"); setPropina(0); setMontoCobrado(""); setClienteCC(""); };
   const irAPagar=()=>{
     if(modoActual==="iguales" && n<2){ return; }
     if(pagoSubtotal<=0) return;
@@ -3907,12 +3974,14 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
   };
   const confirmar=()=>{
     if(esCC && !clienteCC) return;
+    const esMonto = modoActual==="iguales" || modoActual==="libre";
     onPagar({
       etiqueta: etiquetaPago,
-      items: modoActual==="iguales" ? [] : selItems,
-      montoFijo: modoActual==="iguales" ? montoIguales : null,
+      items: esMonto ? [] : selItems,
+      montoFijo: esMonto ? pagoSubtotal : null,
       partes: modoActual==="iguales" ? partesAhora : null,
       nPersonas: n,
+      tipoDivision: modoActual==="libre" ? "libre" : "iguales",
     }, medioPago, propinaFinal, esCC ? Number(clienteCC) : null);
     resetPago();
   };
@@ -3953,6 +4022,8 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
           style={{flex:1,background:modoActual==="consumo"?"#7c3aed":"#2a2d3a",border:"none",color:modoActual==="consumo"?"#fff":"#9ca3af",borderRadius:7,padding:"8px 4px",cursor:"pointer",fontSize:12,fontWeight:600,opacity:(modoBloqueado&&modoActual!=="consumo")?0.4:1}}>Por consumo</button>
         <button disabled={modoBloqueado&&modoActual!=="iguales"} onClick={()=>setModo("iguales")}
           style={{flex:1,background:modoActual==="iguales"?"#7c3aed":"#2a2d3a",border:"none",color:modoActual==="iguales"?"#fff":"#9ca3af",borderRadius:7,padding:"8px 4px",cursor:"pointer",fontSize:12,fontWeight:600,opacity:(modoBloqueado&&modoActual!=="iguales")?0.4:1}}>Partes iguales</button>
+        <button disabled={modoBloqueado&&modoActual!=="libre"} onClick={()=>setModo("libre")}
+          style={{flex:1,background:modoActual==="libre"?"#7c3aed":"#2a2d3a",border:"none",color:modoActual==="libre"?"#fff":"#9ca3af",borderRadius:7,padding:"8px 4px",cursor:"pointer",fontSize:12,fontWeight:600,opacity:(modoBloqueado&&modoActual!=="libre")?0.4:1}}>Por monto</button>
       </div>
 
       {modoActual==="consumo" ? (<>
@@ -3972,6 +4043,11 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
           })}
         </div>
         <button onClick={()=>setSel(Object.fromEntries(restantes.map(r=>[r._key,r.qty])))} style={{background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:11,marginBottom:10}}>Seleccionar todo lo que falta</button>
+      </>) : modoActual==="libre" ? (<>
+        <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:6}}>¿Cuánto paga esta persona?</label>
+        <p style={{margin:"0 0 8px",color:"#6b7280",fontSize:10}}>Sin atarlo a productos ni a partes — cada uno paga el monto que le toque, con el medio de pago que quiera, hasta cubrir el total.</p>
+        <input type="number" value={montoLibreInput} onChange={e=>setMontoLibreInput(e.target.value)} placeholder="Ej: 100000"
+          style={{width:"100%",background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"9px 10px",fontSize:16,fontWeight:700,boxSizing:"border-box",marginBottom:10}}/>
       </>) : (<>
         {!mesa.divisionIgual&&<div style={{marginBottom:10}}>
           <label style={{fontSize:11,color:"#9ca3af",display:"block",marginBottom:5}}>¿Entre cuántas personas se divide?</label>
@@ -4177,12 +4253,12 @@ function ModalSaldar({ info, fmtGs, onSaldar, onClose }) {
 function ModalAbrirTurno({ fmtGs, onAbrir, onClose }) {
   const [fondo,setFondo]=useState(0);
   return(<div style={{background:"#1a1d27",borderRadius:13,padding:22,width:300}}>
-    <h3 style={{margin:"0 0 4px",color:"#22c55e"}}>Abrir turno</h3>
+    <h3 style={{margin:"0 0 4px",color:"#22c55e"}}>🌙 Abrir noche</h3>
     <p style={{margin:"0 0 14px",color:"#6b7280",fontSize:12}}>Fondo inicial de caja</p>
     <input type="number" value={fondo} onChange={e=>setFondo(Number(e.target.value))} style={{width:"100%",background:"#0f1117",border:"1px solid #2a2d3a",color:"#e8e8e8",borderRadius:7,padding:"11px",fontSize:18,fontWeight:700,boxSizing:"border-box",marginBottom:16}}/>
     <div style={{display:"flex",gap:8}}>
       <button onClick={onClose} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:10,cursor:"pointer"}}>Cancelar</button>
-      <button onClick={()=>onAbrir(fondo)} style={{flex:1,background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:10,cursor:"pointer",fontWeight:800}}>Abrir turno</button>
+      <button onClick={()=>onAbrir(fondo)} style={{flex:1,background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:10,cursor:"pointer",fontWeight:800}}>Abrir noche</button>
     </div>
   </div>);
 }
