@@ -1388,6 +1388,12 @@ function App() {
   // Roles habilitados para cobrar y cerrar mesas (libera la mesa)
   const ROLES_COBRO = ["dueno","cajero"];
   const puedeCobrarMesa = () => ROLES_COBRO.includes(usuario?.rol);
+  // Mozos pueden usar "Dividir cuenta" (cobrar por persona + cargar el
+  // medio de pago), pero NO pueden dar de baja la mesa: cuando un mozo
+  // completa el último pago de una división, la mesa queda "Todo cobrado"
+  // pero sigue ocupada hasta que un cajero/dueño la cierre.
+  const ROLES_DIVIDIR = ["dueno","cajero","mozo"];
+  const puedeDividirCuenta = () => ROLES_DIVIDIR.includes(usuario?.rol);
 
   const showToast = (msg, tipo="ok") => {
     setToast({msg,tipo});
@@ -1493,11 +1499,25 @@ function App() {
   };
   const grupoCobroMesa = (mesa) => `${mesa.id}-${mesa.hora||""}`;
 
+  // Imprime el comprobante de UN pago separado ANTES de saber el medio de
+  // pago (el cliente lo revisa primero, recién después dice cómo paga).
+  // El ticket nunca muestra el medio de pago, así que si el mozo/cajero se
+  // equivoca eligiéndolo, se corrige sin reimprimir nada.
+  const imprimirComprobanteDivision = (mesa, pagoMeta, etiqueta) => {
+    if(!puedeDividirCuenta()) return;
+    const subtotal = pagoMeta.montoFijo!=null
+      ? Math.round(pagoMeta.montoFijo)
+      : (pagoMeta.items||[]).reduce((s,i)=>s+i.precio*i.qty,0);
+    const sectorNom = SECTORES.find(s=>s.id===mesa.sector)?.nombre || "Salón";
+    const ticket={tipo:"svf",sector:sectorNom,numero:mesa.numero,mozo:mesa.mozo,items:pagoMeta.items||[],total:subtotal,hora:ahora(),fecha:diaOperativo(),pagoSeparado:etiqueta};
+    enviarAImpresora(ticket);
+  };
+
   // Registra UN pago separado. pagoMeta = { etiqueta, items:[], montoFijo, partes, nPersonas }
   const registrarPagoParcial = (mesa, pagoMeta, medioPago, propina=0, clienteCCId=null) => {
-    if(!puedeCobrarMesa()){
+    if(!puedeDividirCuenta()){
       registrarLog("Intento de cobro no autorizado",`${usuario?.nombre||"?"} (${usuario?.rol||"?"}) · Mesa #${mesa.numero}`);
-      showToast("Tu usuario no tiene permiso para cobrar ni cerrar mesas","err");
+      showToast("Tu usuario no tiene permiso para cobrar","err");
       return;
     }
     const subtotal = pagoMeta.montoFijo!=null
@@ -1529,19 +1549,27 @@ function App() {
     const mesaProyectada = {...mesa, pagosParciales:[...(mesa.pagosParciales||[]), pago], divisionIgual};
     const divisionSaldada = totalRestanteMesa(mesaProyectada) <= 0;
 
-    // ticket de ESTE pago: se manda directo a la impresora y queda para
-    // reimprimir en Caja. No abre el modal en pantalla para no cortar el
-    // flujo de la división (el siguiente comensal ya está esperando).
+    // El ticket de ESTE pago ya se imprimió antes (imprimirComprobanteDivision,
+    // apenas se fijó el monto) — acá solo queda el registro para reimprimir
+    // desde Caja si hiciera falta.
     const ticket={tipo:"svf",sector:sectorNom,numero:mesa.numero,mozo:mesa.mozo,items:pagoMeta.items||[],total,hora:ahora(),fecha:diaOperativo(),pagoSeparado:etiqueta};
-    enviarAImpresora(ticket);
     setHistorialTickets(prev=>[...prev,{...ticket,id:pagoId}]);
 
-    if(divisionSaldada){
-      // división completa -> descuento de stock (una sola vez) y cierre
+    if(divisionSaldada && puedeCobrarMesa()){
+      // división completa Y quien cobra puede cerrar mesas (dueño/cajero)
+      // -> descuento de stock (una sola vez) y cierre
       descontarStockPorVenta(mesa.pedidos||[]);
       setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
       setModalDividir(null); setMesaActiva(null);
       showToast(`Mesa cerrada — cobro separado completo`);
+    } else if(divisionSaldada){
+      // división completa pero la cobró un mozo: los mozos no dan de baja
+      // mesas, así que queda "Todo cobrado" y ocupada hasta que un
+      // cajero/dueño la cierre desde acá mismo (botón "Cerrar mesa").
+      setMesas(prev=>prev.map(m=>m.id===mesa.id
+        ? {...m, pagosParciales:[...(m.pagosParciales||[]), pago], divisionIgual}
+        : m));
+      showToast(`${etiqueta} cobrado — ${fmtGs(total)}. Todo cobrado, avisá a un cajero/dueño para cerrar la mesa`);
     } else {
       setMesas(prev=>prev.map(m=>m.id===mesa.id
         ? {...m, pagosParciales:[...(m.pagosParciales||[]), pago], divisionIgual}
@@ -1551,6 +1579,10 @@ function App() {
   };
 
   const cerrarMesaDividida = (mesaId) => {
+    if(!puedeCobrarMesa()){
+      showToast("Tu usuario no tiene permiso para cerrar mesas — avisá a un cajero/dueño","err");
+      return;
+    }
     const m0 = mesas.find(m=>m.id===mesaId);
     if(!m0) return;
     descontarStockPorVenta(m0.pedidos||[]);
@@ -1560,6 +1592,10 @@ function App() {
   };
 
   const deshacerUltimoPagoParcial = (mesaId) => {
+    if(!puedeCobrarMesa()){
+      showToast("Tu usuario no tiene permiso para deshacer cobros — avisá a un cajero/dueño","err");
+      return;
+    }
     const mesa = mesas.find(m=>m.id===mesaId);
     const ultimo = (mesa?.pagosParciales||[]).slice(-1)[0];
     if(!ultimo) return;
@@ -2434,6 +2470,7 @@ function App() {
             pagadoDivision={totalPagadoParcial(mesaObj)}
             restoDivision={totalRestanteMesa(mesaObj)}
             puedeCobrar={puedeCobrarMesa()}
+            puedeDividir={puedeDividirCuenta()}
           />
         )}
 
@@ -3426,6 +3463,8 @@ function App() {
             totalMesaGs={totalMesa(md)}
             pagado={totalPagadoParcial(md)}
             resto={totalRestanteMesa(md)}
+            puedeCerrar={puedeCobrarMesa()}
+            onImprimir={(pagoMeta,etiqueta)=>imprimirComprobanteDivision(md,pagoMeta,etiqueta)}
             onPagar={(pagoMeta,mp,prop,ccId)=>registrarPagoParcial(md,pagoMeta,mp,prop,ccId)}
             onDeshacer={()=>deshacerUltimoPagoParcial(md.id)}
             onCobrarResto={()=>{setModalDividir(null);setModalPago({tipo:"mesa",data:md,resto:true});}}
@@ -3446,7 +3485,7 @@ function App() {
 // ═══════════════════════════════════════════════════════
 // DETALLE MESA
 // ═══════════════════════════════════════════════════════
-function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busqueda, setBusqueda, todasCategorias, totalMesa, fmtGs, sectorNombre, sectorColor, onVolver, onAgregarItem, onQuitarItem, onEnviarCocina, onPedirCuenta, onCobrar, onDividir, hayDivision, pagadoDivision, restoDivision, puedeCobrar }) {
+function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busqueda, setBusqueda, todasCategorias, totalMesa, fmtGs, sectorNombre, sectorColor, onVolver, onAgregarItem, onQuitarItem, onEnviarCocina, onPedirCuenta, onCobrar, onDividir, hayDivision, pagadoDivision, restoDivision, puedeCobrar, puedeDividir }) {
   const hayNuevos = itemsPendientes(mesa.pedidos, mesa.enviados).length>0;
   return(
     <div>
@@ -3457,7 +3496,7 @@ function DetalleMesa({ mesa, carta, cartaFiltrada, catFiltro, setCatFiltro, busq
         <div style={{marginLeft:"auto",display:"flex",gap:6,flexWrap:"wrap"}}>
           {hayNuevos&&<button onClick={onEnviarCocina} style={{background:"#f97316",border:"none",color:"#fff",borderRadius:7,padding:"8px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🖨 Cocina</button>}
           <button onClick={onPedirCuenta} style={{background:"#ef4444",border:"none",color:"#fff",borderRadius:7,padding:"8px 11px",cursor:"pointer",fontWeight:600,fontSize:12}}>Pedir cuenta</button>
-          {puedeCobrar&&mesa.pedidos.length>0&&<button onClick={onDividir} style={{background:hayDivision?"#7c3aed":"#3b0764",border:"1px solid #a855f7",color:"#fff",borderRadius:7,padding:"8px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🧾 {hayDivision?"Continuar división":"Dividir cuenta"}</button>}
+          {puedeDividir&&mesa.pedidos.length>0&&<button onClick={onDividir} style={{background:hayDivision?"#7c3aed":"#3b0764",border:"1px solid #a855f7",color:"#fff",borderRadius:7,padding:"8px 12px",cursor:"pointer",fontWeight:700,fontSize:12}}>🧾 {hayDivision?"Continuar división":"Dividir cuenta"}</button>}
           {puedeCobrar?<button onClick={onCobrar} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:"8px 13px",cursor:"pointer",fontWeight:700,fontSize:12}}>{hayDivision?`Cobrar el resto ${fmtGs(restoDivision)}`:`Cobrar ${fmtGs(totalMesa(mesa))}`}</button>
           :<span style={{background:"#1a1d27",border:"1px solid #2a2d3a",color:"#6b7280",borderRadius:7,padding:"8px 13px",fontSize:11}}>🔒 Solo caja puede cobrar</span>}
         </div>
@@ -3917,7 +3956,7 @@ function PinDueno({ usuarios, titulo, onOk, onClose }){
 // ═══════════════════════════════════════════════════════
 // COBRO SEPARADO — dividir la cuenta de una mesa entre varios
 // ═══════════════════════════════════════════════════════
-function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, restantes, totalMesaGs, pagado, resto, onPagar, onDeshacer, onCobrarResto, onCerrarMesa, onClose }){
+function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, restantes, totalMesaGs, pagado, resto, puedeCerrar, onImprimir, onPagar, onDeshacer, onCobrarResto, onCerrarMesa, onClose }){
   const pagos = mesa.pagosParciales||[];
   // divisionIgual guarda {tipo:"iguales",n} o {tipo:"libre"} — mesas ya en
   // curso de una división guardada antes de este cambio no tienen `tipo`,
@@ -3951,7 +3990,7 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
 
   const [nombre,setNombre]=useState("");
   const [fase,setFase]=useState("elegir");
-  const [medioPago,setMedioPago]=useState("Efectivo");
+  const [medioPago,setMedioPago]=useState("");
   const [propina,setPropina]=useState(0);
   const [montoCobrado,setMontoCobrado]=useState("");
   const [clienteCC,setClienteCC]=useState("");
@@ -3965,16 +4004,22 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
   const totalEstePago = pagoSubtotal + propinaFinal;
   const etiquetaPago = (nombre.trim()||`#${pagos.length+1}`);
 
-  const resetPago=()=>{ setSel({}); setNombre(""); setPartesEstePago(1); setMontoLibreInput(""); setFase("elegir"); setMedioPago("Efectivo"); setPropina(0); setMontoCobrado(""); setClienteCC(""); };
+  const resetPago=()=>{ setSel({}); setNombre(""); setPartesEstePago(1); setMontoLibreInput(""); setFase("elegir"); setMedioPago(""); setPropina(0); setMontoCobrado(""); setClienteCC(""); };
+  const esMonto = modoActual==="iguales" || modoActual==="libre";
+  // Imprime el comprobante ACÁ, apenas se fija el monto — todavía no se
+  // sabe el medio de pago (eso se elige en el paso siguiente). El papel
+  // que se lleva el cliente nunca cambia aunque después se corrija el
+  // medio de pago.
   const irAPagar=()=>{
     if(modoActual==="iguales" && n<2){ return; }
     if(pagoSubtotal<=0) return;
+    onImprimir({ items: esMonto ? [] : selItems, montoFijo: esMonto ? pagoSubtotal : null }, etiquetaPago);
     setMontoCobrado(String(pagoSubtotal));
     setFase("pagar");
   };
   const confirmar=()=>{
+    if(!medioPago) return;
     if(esCC && !clienteCC) return;
-    const esMonto = modoActual==="iguales" || modoActual==="libre";
     onPagar({
       etiqueta: etiquetaPago,
       items: esMonto ? [] : selItems,
@@ -4004,7 +4049,7 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
           <span>✅ {p.etiqueta} · {p.medioPago}{p.propina>0?` · propina ${fmtGs(p.propina)}`:""}</span>
           <span style={{display:"flex",gap:8,alignItems:"center"}}>
             <b>{fmtGs(p.total)}</b>
-            {idx===pagos.length-1&&<button onClick={onDeshacer} style={{background:"#2a2d3a",border:"none",color:"#ef4444",borderRadius:5,padding:"3px 7px",cursor:"pointer",fontSize:10}}>deshacer</button>}
+            {idx===pagos.length-1&&puedeCerrar&&<button onClick={onDeshacer} style={{background:"#2a2d3a",border:"none",color:"#ef4444",borderRadius:5,padding:"3px 7px",cursor:"pointer",fontSize:10}}>deshacer</button>}
           </span>
         </div>
       ))}
@@ -4013,7 +4058,9 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
     {resto<=0 ? (
       <div style={{textAlign:"center",padding:"10px 0"}}>
         <p style={{color:"#22c55e",fontWeight:700,fontSize:14,margin:"0 0 10px"}}>✅ Todo cobrado</p>
-        <button onClick={onCerrarMesa} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:"9px 20px",cursor:"pointer",fontWeight:700}}>Cerrar mesa</button>
+        {puedeCerrar
+          ? <button onClick={onCerrarMesa} style={{background:"#22c55e",border:"none",color:"#fff",borderRadius:7,padding:"9px 20px",cursor:"pointer",fontWeight:700}}>Cerrar mesa</button>
+          : <p style={{color:"#9ca3af",fontSize:12,margin:0}}>Avisá a un cajero o al dueño para cerrar la mesa.</p>}
       </div>
     ) : fase==="elegir" ? (<>
       {/* selector de modo */}
@@ -4082,13 +4129,14 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
       <div style={{display:"flex",gap:8}}>
         <button onClick={onClose} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:10,cursor:"pointer"}}>Cerrar</button>
         <button onClick={irAPagar} disabled={pagoSubtotal<=0||(modoActual==="iguales"&&n<2)}
-          style={{flex:2,background:pagoSubtotal>0?"#7c3aed":"#3a3a3a",border:"none",color:"#fff",borderRadius:7,padding:10,cursor:pagoSubtotal>0?"pointer":"not-allowed",fontWeight:800,fontSize:13}}>Cobrar {etiquetaPago} →</button>
+          style={{flex:2,background:pagoSubtotal>0?"#7c3aed":"#3a3a3a",border:"none",color:"#fff",borderRadius:7,padding:10,cursor:pagoSubtotal>0?"pointer":"not-allowed",fontWeight:800,fontSize:13}}>🖨 Imprimir ticket de {etiquetaPago} →</button>
       </div>
     </>) : (<>
-      {/* FASE PAGAR */}
-      <button onClick={()=>setFase("elegir")} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:12,padding:0,marginBottom:8}}>← volver a elegir</button>
+      {/* FASE PAGAR — el ticket de este pago ya salió por la impresora al
+          entrar acá (ver irAPagar). Lo que falta es cargar el medio de pago. */}
+      <button onClick={()=>setFase("elegir")} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:12,padding:0,marginBottom:8}}>← volver a elegir (vuelve a imprimir)</button>
       <div style={{background:"#0f1117",borderRadius:9,padding:11,marginBottom:12}}>
-        <div style={{fontSize:12,color:"#9ca3af",marginBottom:3}}>Cobrando {etiquetaPago}</div>
+        <div style={{fontSize:12,color:"#22c55e",marginBottom:3}}>✅ Ticket impreso — {etiquetaPago} · ahora cargá cómo pagó</div>
         <div style={{fontSize:18,fontWeight:900,color:esCC?"#ef4444":"#22c55e"}}>{fmtGs(totalEstePago)}</div>
         {modoActual!=="iguales"&&selItems.length>0&&<div style={{fontSize:10,color:"#6b7280",marginTop:4}}>{selItems.map(i=>`${i.qty}x ${i.nombre}`).join(" · ")}</div>}
       </div>
@@ -4131,9 +4179,9 @@ function ModalDividirCuenta({ mesa, clientes, usuarios, fmtGs, sectorNombre, res
 
       <div style={{display:"flex",gap:8}}>
         <button onClick={()=>setFase("elegir")} style={{flex:1,background:"#2a2d3a",border:"none",color:"#9ca3af",borderRadius:7,padding:10,cursor:"pointer"}}>Cancelar</button>
-        <button onClick={confirmar} disabled={esCC&&!clienteCC}
-          style={{flex:2,background:(esCC&&!clienteCC)?"#3a3a3a":(esCC?"#ef4444":"#22c55e"),border:"none",color:"#fff",borderRadius:7,padding:10,cursor:(esCC&&!clienteCC)?"not-allowed":"pointer",fontWeight:800,fontSize:13}}>
-          {esCC?"Registrar Crédito":"Confirmar e imprimir"}
+        <button onClick={confirmar} disabled={!medioPago||(esCC&&!clienteCC)}
+          style={{flex:2,background:(!medioPago||(esCC&&!clienteCC))?"#3a3a3a":(esCC?"#ef4444":"#22c55e"),border:"none",color:"#fff",borderRadius:7,padding:10,cursor:(!medioPago||(esCC&&!clienteCC))?"not-allowed":"pointer",fontWeight:800,fontSize:13}}>
+          {!medioPago?"Elegí un medio de pago":esCC?"Registrar Crédito":"Registrar cobro"}
         </button>
       </div>
     </>)}
