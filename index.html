@@ -3313,7 +3313,8 @@ function App() {
               <div style={{textAlign:"center",padding:60}}>
                 <div style={{fontSize:50,marginBottom:14}}>✅</div>
                 <h3 style={{color:"#22c55e",margin:"0 0 6px"}}>Conteo registrado</h3>
-                <p style={{color:"#6b7280",fontSize:13}}>Gracias, {usuario.nombre}. Tu declaración de caja quedó guardada y no se puede modificar. El dueño va a revisar el resultado.</p>
+                <p style={{color:"#6b7280",fontSize:13}}>Gracias, {usuario.nombre}. Tu declaración de caja quedó guardada y no se puede modificar. El dueño va a revisar el resultado más adelante en Auditoría.</p>
+                <button onClick={()=>{setArqueoAbierto(null);setDeclaracion({});setDenomEfectivo({});setObservacionArqueo("");}} style={{marginTop:18,background:"#22c55e",border:"none",color:"#fff",borderRadius:11,padding:"11px 24px",cursor:"pointer",fontWeight:700,fontSize:13}}>🌙 Abrir noche siguiente</button>
               </div>
             ):(
               <div>
