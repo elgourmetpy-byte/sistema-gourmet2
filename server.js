@@ -46,6 +46,23 @@ if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 app.use(express.json({ limit: "5mb" }));
 
+// ── Traba simple para /api/state ────────────────────────
+// Hasta ahora CUALQUIERA que conociera la dirección del sistema podía leer
+// o modificar todos los datos (mesas, ventas, clientes, arqueo) sin ningún
+// usuario ni contraseña — probablemente así se reseteó el arqueo abierto
+// la noche del 19/9/2026 sin que quede registrado quién lo hizo.
+// Si se configura la variable de entorno APP_SECRET (en Render → el
+// servicio → Environment), el sistema exige que cada pedido a /api/state
+// mande esa misma clave en el encabezado "X-App-Secret" (index.html ya la
+// manda). Si no se configura APP_SECRET, la traba queda desactivada, como
+// antes — para no cortarle el servicio a nadie hasta que se configure.
+const APP_SECRET = process.env.APP_SECRET || "";
+function exigirClave(req, res, next) {
+  if (!APP_SECRET) return next();
+  if (req.headers["x-app-secret"] === APP_SECRET) return next();
+  res.status(401).json({ error: "no autorizado" });
+}
+
 // ── Página principal del sistema ────────────────────────
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
@@ -168,12 +185,12 @@ function aplicarCambios(dataPrevia, dirty, scalars) {
 }
 
 // ── El sistema pide los datos compartidos ───────────────
-app.get("/api/state", (req, res) => {
+app.get("/api/state", exigirClave, (req, res) => {
   res.json(estado);
 });
 
 // ── El sistema guarda cambios nuevos ────────────────────
-app.post("/api/state", async (req, res) => {
+app.post("/api/state", exigirClave, async (req, res) => {
   const body = req.body || {};
   const origen = body.origen || {};
   let resumen = [];
@@ -208,6 +225,7 @@ app.post("/api/state", async (req, res) => {
     rev: estado.rev,
     usuario: origen.usuario || null,
     rol: origen.rol || null,
+    ip: req.ip,
     cambios: resumen,
   });
   res.json(estado);
