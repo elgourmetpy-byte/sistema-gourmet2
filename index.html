@@ -128,6 +128,12 @@ const generarMesas = () => {
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
 const MENU_VERSION = "2026-08-14-e";
 
+// Clave para /api/state — tiene que ser IDÉNTICA a la variable de entorno
+// APP_SECRET configurada en Render (Environment). Si en Render no está
+// configurada, el servidor no exige nada y esto no rompe nada.
+const APP_SECRET = "UDc1jcHC3VYmAz6_vQZJEtXO";
+const HEADERS_API = { "Content-Type": "application/json", "X-App-Secret": APP_SECRET };
+
 const CARTA_BASE = [
   // LOMITOS
   { id:101, nombre:"Lomito simple", desc:"Lomito, tomate, lechuga", precio:24000, categoria:"Lomitos", tipo:"plato", guarnicion:false },
@@ -1198,7 +1204,7 @@ function App() {
 
   // Carga inicial: trae lo que ya está guardado en el servidor
   useEffect(() => {
-    fetch("/api/state").then(r=>r.json()).then(res=>{
+    fetch("/api/state",{headers:HEADERS_API}).then(r=>r.json()).then(res=>{
       applyingRemoteRef.current = true;
       const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
       const nuevaBase = {};
@@ -1270,7 +1276,7 @@ function App() {
 
     sincronizandoRef.current = true;
     const origen = {usuario: usuario?.nombre||null, rol: usuario?.rol||null};
-    fetch("/api/state",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
+    fetch("/api/state",{method:"POST",headers:HEADERS_API,body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
       .then(r=>r.json()).then(res=>{
         serverRevRef.current=res.rev; setConectado(true);
         // La base avanza SOLO en las claves que efectivamente mandamos, y
@@ -1310,7 +1316,7 @@ function App() {
       // Mientras se está imprimiendo no consultamos ni redibujamos nada:
       // si la pantalla se refresca, el navegador cancela el trabajo de impresión.
       if(window.__IMPRIMIENDO__) return;
-      fetch("/api/state").then(r=>r.json()).then(res=>{
+      fetch("/api/state",{headers:HEADERS_API}).then(r=>r.json()).then(res=>{
         if(res.rev>serverRevRef.current){
           applyingRemoteRef.current=true;
           const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
@@ -2220,7 +2226,10 @@ function App() {
     });
   const ventasHoy   = ventas.filter(v=>v.fecha===diaOperativo());
   const ticketsHoy  = (historialTickets||[]).filter(t=>t.fecha===diaOperativo());
-  const totalHoy    = ventasHoy.reduce((s,v)=>s+v.total,0);   // lo efectivamente cobrado (efectivo + tarjetas + transferencia + QR)
+  // Lo efectivamente cobrado (efectivo + tarjetas + transferencia + QR), SIN el
+  // envío de delivery: ese monto es plata que hay que pagarle al repartidor
+  // (ver "A pagar Delivery"), no es venta del restaurante — pedido de Raúl 2026-09-20.
+  const totalHoy    = ventasHoy.reduce((s,v)=>s+v.total-(v.envio||0),0);
   // "Mesas" cuenta mesas distintas: los pagos separados de una misma mesa
   // (mismo `grupo`) cuentan como una sola.
   const cuentaMesasHoy = (()=>{
@@ -2260,13 +2269,13 @@ function App() {
     if(periodoRep==="todo") return true;
     return parseFechaPY(v.fecha) >= desdeRep;
   });
-  const totalRep    = ventasRep.reduce((s,v)=>s+v.total,0);
+  const totalRep    = ventasRep.reduce((s,v)=>s+v.total-(v.envio||0),0);   // sin envío de delivery, ídem totalHoy
   const propinasRep = ventasRep.reduce((s,v)=>s+(v.propina||0),0);
   const ticketProm  = ventasRep.length ? Math.round(totalRep/ventasRep.length) : 0;
   // Total vendido por día
   const ventasPorDiaRep = Object.values(ventasRep.reduce((acc,v)=>{
     if(!acc[v.fecha]) acc[v.fecha]={fecha:v.fecha,total:0,cant:0};
-    acc[v.fecha].total+=v.total; acc[v.fecha].cant+=1;
+    acc[v.fecha].total+=v.total-(v.envio||0); acc[v.fecha].cant+=1;
     return acc;
   },{})).sort((a,b)=>parseFechaPY(b.fecha)-parseFechaPY(a.fecha));
   const maxDiaRep = Math.max(1,...ventasPorDiaRep.map(d=>d.total));
@@ -2401,6 +2410,21 @@ function App() {
       )}
 
       <div style={{padding:14,maxWidth:1400,margin:"0 auto"}}>
+
+        {/* Aviso: cambió el día (medianoche) y la noche no está abierta — sin
+            esto, Caja/Delivery/Historial se ven en cero de golpe y parece que
+            se borró todo, cuando en realidad los datos de antes siguen
+            guardados (se ven en Reportes). Pedido de Raúl 2026-09-20, tras la
+            confusión de la madrugada del 19→20/9. Se autolimpia solo: deja de
+            mostrarse en cuanto se abre la noche o entra la primera venta del día. */}
+        {!arqueoAbierto && ventasHoy.length===0 && ventas.length>0 && (
+          <div style={{background:"#1a2332",border:"1px solid #3b82f6",borderRadius:11,padding:"12px 16px",marginBottom:14,display:"flex",alignItems:"flex-start",gap:10}}>
+            <span style={{fontSize:20,lineHeight:1}}>📅</span>
+            <div style={{fontSize:12,color:"#9ca3af",lineHeight:1.5}}>
+              <b style={{color:"#e8e8e8"}}>Hoy ({hoy()}) todavía no tiene nada cargado — es un día nuevo, no se borró nada.</b> Lo de días anteriores sigue guardado, podés verlo en <b>Reportes</b> o <b>Auditoría</b>. Para arrancar el turno de hoy, andá a <b>Arqueo</b> y tocá "Abrir noche".
+            </div>
+          </div>
+        )}
 
         {/* ══ MESAS ══ */}
         {seccion==="mesas"&&!mesaActiva&&(
