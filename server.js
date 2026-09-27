@@ -149,9 +149,25 @@ let estado = cargarEstado();
 // estaban: un pedido no puede desaparecer si nadie mandó su id en
 // "del".
 // ═══════════════════════════════════════════════════════
+// ⚠️ ARREGLO set-2026 (mesa cobrada dos veces — Patio 2, 26/9):
+// Una mesa que ya se cobró y quedó "libre" NO puede volver a aparecer
+// ocupada con el MISMO pedido porque un dispositivo con una foto vieja
+// la reenvió. Al cerrar, la mesa guarda en "cerrada" la marca de la
+// sesión que se cerró (sesion, o la hora de apertura en mesas viejas).
+// Si llega esa misma sesión otra vez, se descarta: para volver a ocupar
+// la mesa hay que abrirla de nuevo (eso genera una sesión nueva).
+const claveSesionMesa = (m) => (m && (m.sesion || m.hora)) || null;
+function esMesaRevivida(actual, entrante) {
+  if (!actual || !entrante) return false;
+  if (actual.estado !== "libre" || !actual.cerrada) return false;
+  if (entrante.estado === "libre") return false;
+  return claveSesionMesa(entrante) === actual.cerrada;
+}
+
 function aplicarCambios(dataPrevia, dirty, scalars) {
   const data = { ...dataPrevia };
   const resumen = [];
+  const rechazados = [];
 
   for (const [clave, cambios] of Object.entries(dirty || {})) {
     if (!cambios || typeof cambios !== "object") continue;
@@ -160,7 +176,12 @@ function aplicarCambios(dataPrevia, dirty, scalars) {
     const upsert = Array.isArray(cambios.upsert) ? cambios.upsert : [];
     const del = Array.isArray(cambios.del) ? cambios.del : [];
     upsert.forEach(it => {
-      if (it && it.id !== undefined) porId.set(it.id, it);
+      if (!it || it.id === undefined) return;
+      if (clave === "mesas" && esMesaRevivida(porId.get(it.id), it)) {
+        rechazados.push(it.id);
+        return;
+      }
+      porId.set(it.id, it);
     });
     del.forEach(id => porId.delete(id));
     let fusion = Array.from(porId.values());
@@ -181,7 +202,10 @@ function aplicarCambios(dataPrevia, dirty, scalars) {
     resumen.push(`${clave}: actualizado`);
   }
 
-  return { data, resumen };
+  if (rechazados.length) {
+    resumen.push(`mesas ya cobradas que se intentaron revivir (descartado): ${rechazados.join(", ")}`);
+  }
+  return { data, resumen, rechazados };
 }
 
 // ── El sistema pide los datos compartidos ───────────────
@@ -194,12 +218,15 @@ app.post("/api/state", exigirClave, async (req, res) => {
   const body = req.body || {};
   const origen = body.origen || {};
   let resumen = [];
+  let rechazados = [];
 
   if (body.dirty || body.scalars) {
     // Protocolo nuevo: el cliente manda solo lo que efectivamente cambió.
     const r = aplicarCambios(estado.data, body.dirty, body.scalars);
     estado = { rev: estado.rev + 1, data: r.data };
     resumen = r.resumen;
+    rechazados = r.rechazados;
+    if (rechazados.length) console.warn(`[sync] Se descartó revivir mesas ya cobradas: ${rechazados.join(", ")} (${origen.usuario || "?"})`);
   } else if (body.data) {
     // Protocolo viejo (compatibilidad hacia atrás): un dispositivo con
     // la pantalla vieja todavía en el navegador (sin refrescar) manda
@@ -228,7 +255,7 @@ app.post("/api/state", exigirClave, async (req, res) => {
     ip: req.ip,
     cambios: resumen,
   });
-  res.json(estado);
+  res.json(rechazados.length ? { ...estado, rechazados } : estado);
 });
 
 // ═══════════════════════════════════════════════════════
