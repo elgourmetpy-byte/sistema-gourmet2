@@ -823,6 +823,11 @@ const TODAS_CATEGORIAS = ["Todas", ..._categoriasOrdenadas];
 // así el agregado siempre sale.
 // ═══════════════════════════════════════════════════════
 // Convierte el formato viejo (lista de platos) al nuevo (cuántos de cada uno)
+// Mesa liberada después de cobrar. "cerrada" recuerda qué apertura se
+// cerró: el servidor usa eso para no dejar que una pantalla con una foto
+// vieja vuelva a subir la mesa ocupada con el mismo pedido (ver server.js).
+const claveSesionMesa = (m) => (m && (m.sesion || m.hora)) || null;
+const mesaLiberada = (m) => ({...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null,sesion:null,cerrada:claveSesionMesa(m)});
 const mapaEnviados = (enviados, items) => {
   if(!enviados) return {};
   if(!Array.isArray(enviados)) return {...enviados};
@@ -978,6 +983,32 @@ const LIMPIEZA_INICIALES = [
 const fmtGs  = n  => `Gs ${Number(n).toLocaleString("es-PY")}`;
 // En la comanda de cocina, si es 1 sola "½ Pizza ..." no mostramos el "1x" (confunde, ya que dice ½)
 const fmtQty = i => (i.qty===1 && typeof i.nombre==="string" && i.nombre.trim().startsWith("½")) ? "" : `${i.qty}x `;
+
+// ── Medias pizzas ────────────────────────────────────────
+// Cada media pizza va en su PROPIO renglón, en el orden en que la cargó
+// el mozo (nunca se suman: "3x ½ Peperoni" confundía a la cocina). En la
+// comanda se arman de a dos en ese orden: 1ª+2ª = Pizza 1, 3ª+4ª = Pizza 2…
+const esMediaPizza = it => typeof it?.nombre==="string" && it.nombre.trim().startsWith("½");
+const claveItemPedido = (item,nota,gua) => esMediaPizza(item)
+  ? `${item.id}|${nota}|${gua}|m${Date.now()}${Math.floor(Math.random()*1000)}`
+  : `${item.id}|${nota}|${gua}`;
+const nombreMitad = nombre => nombre.trim().replace(/^½\s*(Pizza\s+)?/i,"½ ");
+// Devuelve la lista para la comanda: los ítems comunes tal cual y las
+// medias agrupadas en {pizza:n, mitades:[...]}, cada pizza en el lugar
+// donde apareció su primera mitad. Las Sin TACC se emparejan solo entre sí.
+const agruparMediasPizzas = (items) => {
+  const salida = []; const abierta = {}; let n = 0;
+  (items||[]).forEach(it=>{
+    if(!esMediaPizza(it)){ salida.push(it); return; }
+    const grupo = /sin tacc/i.test(it.nombre) ? "tacc" : "comun";
+    for(let q=0; q<(it.qty||1); q++){
+      const mitad = {...it, qty:1};
+      if(abierta[grupo]){ abierta[grupo].mitades.push(mitad); abierta[grupo]=null; }
+      else { const p = {pizza:++n, mitades:[mitad]}; salida.push(p); abierta[grupo]=p; }
+    }
+  });
+  return salida;
+};
 const ahora  = () => new Date().toLocaleTimeString("es-PY",{hour:"2-digit",minute:"2-digit"});
 const hoy    = () => new Date().toLocaleDateString("es-PY");
 
@@ -1202,6 +1233,16 @@ function App() {
     return resultado;
   };
 
+  // Base nueva tras un guardado confirmado: la base que ya teníamos (que
+  // pudo haberse actualizado con el chequeo de 4 s mientras la llamada
+  // viajaba) + exactamente los ítems que mandamos, ni uno más.
+  const avanzarBaseLista = (base, {upsert, del}) => {
+    const porId = new Map((Array.isArray(base)?base:[]).filter(it=>it&&it.id!==undefined).map(it=>[it.id,it]));
+    (upsert||[]).forEach(it=>porId.set(it.id,it));
+    (del||[]).forEach(id=>porId.delete(id));
+    return Array.from(porId.values());
+  };
+
   // Carga inicial: trae lo que ya está guardado en el servidor
   useEffect(() => {
     fetch("/api/state",{headers:HEADERS_API}).then(r=>r.json()).then(res=>{
@@ -1278,12 +1319,22 @@ function App() {
     const origen = {usuario: usuario?.nombre||null, rol: usuario?.rol||null};
     fetch("/api/state",{method:"POST",headers:HEADERS_API,body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
       .then(r=>r.json()).then(res=>{
-        serverRevRef.current=res.rev; setConectado(true);
-        // La base avanza SOLO en las claves que efectivamente mandamos, y
-        // solo hasta la foto que mandamos (no al estado actual, que puede
-        // haber cambiado mientras la llamada viajaba).
+        // Si el servidor descartó algo (una mesa ya cobrada que esta
+        // pantalla tenía vieja), forzamos que el próximo chequeo de 4 s
+        // traiga la versión buena aunque nadie más haya guardado.
+        serverRevRef.current = res.rechazados?.length ? res.rev-1 : res.rev;
+        setConectado(true);
+        // La base avanza SOLO en los ítems que efectivamente mandamos.
+        // ⚠️ ARREGLO set-2026 (mesa cobrada dos veces — Patio 2, 26/9):
+        // antes acá se ponía como base la lista ENTERA tal como estaba al
+        // mandar. Si mientras la llamada viajaba llegaba el chequeo de 4 s
+        // con una mesa cambiada por otro dispositivo (ej. "pedir cuenta"),
+        // esa mesa quedaba marcada como "editada acá" sin serlo. Entonces,
+        // cuando la caja la cobraba y liberaba, esta pantalla ignoraba el
+        // cierre y volvía a subir la mesa vieja con todo el pedido adentro
+        // -> la mesa reaparecía ocupada y se cobraba otra vez.
         const nuevaBase = {...baseSincronizadaRef.current};
-        Object.keys(dirty).forEach(k=>{ nuevaBase[k]=enviado[k]; });
+        Object.keys(dirty).forEach(k=>{ nuevaBase[k]=avanzarBaseLista(nuevaBase[k], dirty[k]); });
         Object.keys(scalars).forEach(k=>{ if(k!=="menuVersion") nuevaBase[k]=enviado[k]; });
         baseSincronizadaRef.current = nuevaBase;
       })
@@ -1452,7 +1503,7 @@ function App() {
 
   // ── Mesas ─────────────────────────────────────────────
   const abrirMesa = (mesa,comensales,mozo) => {
-    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"ocupada",hora:ahora(),comensales,mozo,pedidos:[],enviados:[]}:m));
+    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"ocupada",hora:ahora(),sesion:Date.now(),cerrada:null,comensales,mozo,pedidos:[],enviados:[]}:m));
     setModalMesa(null);registrarLog("Abrió mesa",`${mesa.sector} #${mesa.numero}`);
     showToast(`${SECTORES.find(s=>s.id===mesa.sector)?.nombre||"Mesa"} ${mesa.numero} abierta`);
   };
@@ -1460,7 +1511,7 @@ function App() {
   const agregarItemMesa = (mesaId,item,nota="",guarnicionElegida="") => {
     setMesas(prev=>prev.map(m=>{
       if(m.id!==mesaId)return m;
-      const key = `${item.id}|${nota}|${guarnicionElegida}`;
+      const key = claveItemPedido(item,nota,guarnicionElegida);
       const existe = m.pedidos.find(p=>p._key===key);
       const nuevos = existe
         ? m.pedidos.map(p=>p._key===key?{...p,qty:p.qty+1}:p)
@@ -1565,7 +1616,7 @@ function App() {
       // división completa Y quien cobra puede cerrar mesas (dueño/cajero)
       // -> descuento de stock (una sola vez) y cierre
       descontarStockPorVenta(mesa.pedidos||[]);
-      setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
+      setMesas(prev=>prev.map(m=>m.id===mesa.id?mesaLiberada(m):m));
       setModalDividir(null); setMesaActiva(null);
       showToast(`Mesa cerrada — cobro separado completo`);
     } else if(divisionSaldada){
@@ -1592,7 +1643,7 @@ function App() {
     const m0 = mesas.find(m=>m.id===mesaId);
     if(!m0) return;
     descontarStockPorVenta(m0.pedidos||[]);
-    setMesas(prev=>prev.map(m=>m.id===mesaId?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
+    setMesas(prev=>prev.map(m=>m.id===mesaId?mesaLiberada(m):m));
     setModalDividir(null); setMesaActiva(null);
     showToast("Mesa cerrada");
   };
@@ -1681,7 +1732,15 @@ function App() {
       lineas.push("[H]");
       if(ticket.itemsCocina?.length){
         lineas.push("[S]COCINA");
-        ticket.itemsCocina.forEach(i=>{
+        agruparMediasPizzas(ticket.itemsCocina).forEach(i=>{
+          if(i.pizza){
+            lineas.push(`[G]PIZZA ${i.pizza}:${i.mitades.length<2?" (solo media)":""}`);
+            i.mitades.forEach(h=>{
+              lineas.push(`[G]  ${nombreMitad(h.nombre)}`);
+              if(h.nota) lineas.push(`     -> ${h.nota}`);
+            });
+            return;
+          }
           lineas.push(`[G]${fmtQty(i)}${i.nombre}${i.guarnicionElegida?` (${i.guarnicionElegida})`:""}`);
           if(i.nota) lineas.push(`   -> ${i.nota}`);
         });
@@ -1759,6 +1818,28 @@ function App() {
       ? Math.max(0, totalMesa(mesa) - totalPagadoParcial(mesa))
       : pedidosCobro.reduce((s,p)=>s+p.precio*p.qty,0);
     const total=baseCobro+propina;
+    // Aviso de doble cobro: si esta noche ya se cobró esta misma mesa con
+    // exactamente el mismo pedido, casi seguro es la misma cuenta que
+    // reapareció — se pregunta antes de cobrarla otra vez.
+    if(!esResto){
+      const firma = its => (its||[]).map(i=>`${i._key}x${i.qty}`).sort().join(",");
+      const firmaMesa = firma(pedidosCobro);
+      const previa = ventas.find(v=>v.tipo==="mesa"&&!v.parcial&&v.sector===mesa.sector&&v.mesa===mesa.numero
+        &&v.fecha===diaOperativo()&&(v.total-(v.propina||0))===baseCobro&&firma(v.items)===firmaMesa);
+      const sectorNom = SECTORES.find(s=>s.id===mesa.sector)?.nombre||"Mesa";
+      if(previa && !window.confirm(`⚠️ ATENCIÓN: ${sectorNom} ${mesa.numero} YA SE COBRÓ hoy a las ${previa.hora} por ${fmtGs(previa.total)} (${previa.medioPago}) con EXACTAMENTE el mismo pedido.\n\nAceptar = cobrar OTRA VEZ (solo si de verdad son clientes nuevos).\nCancelar = no cobrar.`)){
+        if(window.confirm(`¿Liberar ${sectorNom} ${mesa.numero} SIN cobrar? (la cuenta ya quedó cobrada a las ${previa.hora})`)){
+          setMesas(prev=>prev.map(m=>m.id===mesa.id?mesaLiberada(m):m));
+          registrarLog("Doble cobro evitado",`${mesa.sector} #${mesa.numero} · ${fmtGs(total)} · ya cobrada ${previa.hora} · mesa liberada sin cobrar`);
+          showToast(`${sectorNom} ${mesa.numero} liberada sin volver a cobrar`);
+          setModalPago(null);setModalDividir(null);setMesaActiva(null);
+        } else {
+          registrarLog("Doble cobro evitado",`${mesa.sector} #${mesa.numero} · ${fmtGs(total)} · ya cobrada ${previa.hora}`);
+          setModalPago(null);
+        }
+        return;
+      }
+    }
     // El stock se descuenta una sola vez, al cerrar: sobre TODO el pedido
     // original (los pagos separados previos no descuentan stock por sí solos).
     descontarStockPorVenta(mesa.pedidos);
@@ -1782,7 +1863,7 @@ function App() {
       registrarLog("Cobro mesa",`${mesa.sector} #${mesa.numero} · ${fmtGs(total)} · ${medioPago}${esResto?" (resto de división)":""}`);
       showToast(`Mesa cerrada — ${fmtGs(total)}`);
     }
-    setMesas(prev=>prev.map(m=>m.id===mesa.id?{...m,estado:"libre",pedidos:[],enviados:[],hora:null,mozo:"",comensales:0,pagosParciales:[],divisionIgual:null}:m));
+    setMesas(prev=>prev.map(m=>m.id===mesa.id?mesaLiberada(m):m));
     setModalPago(null);setModalDividir(null);setMesaActiva(null);
   };
 
@@ -1966,7 +2047,7 @@ function App() {
   const agregarItemDelivery = (pedidoId,item,nota="",guarnicionElegida="") => {
     setPedidosDelivery(prev=>prev.map(p=>{
       if(p.id!==pedidoId)return p;
-      const key=`${item.id}|${nota}|${guarnicionElegida}`;
+      const key=claveItemPedido(item,nota,guarnicionElegida);
       const existe=p.items.find(i=>i._key===key);
       const nuevos=existe?p.items.map(i=>i._key===key?{...i,qty:i.qty+1}:i):[...p.items,{...item,qty:1,nota,guarnicionElegida,_key:key}];
       return {...p,items:nuevos};
@@ -3882,7 +3963,17 @@ function TicketCocina({ ticket, restaurante, fmtGs, onClose }) {
           {ticket.itemsCocina?.length>0&&(
             <div style={{marginBottom:8}}>
               <div style={{fontWeight:700,fontSize:12,marginBottom:4,borderBottom:"1px solid #ddd",paddingBottom:2}}>🍳 COCINA</div>
-              {ticket.itemsCocina.map((i,idx)=>(
+              {agruparMediasPizzas(ticket.itemsCocina).map((i,idx)=>i.pizza?(
+                <div key={idx} style={{marginBottom:6,borderLeft:"3px solid #ef4444",paddingLeft:6}}>
+                  <div style={{fontWeight:900,fontSize:13}}>🍕 PIZZA {i.pizza}{i.mitades.length<2&&<span style={{fontWeight:400,fontSize:11,color:"#c00"}}> (solo media)</span>}</div>
+                  {i.mitades.map((h,k)=>(
+                    <div key={k}>
+                      <div style={{fontWeight:700,fontSize:14,paddingLeft:8}}><span style={{color:"#ef4444"}}>½</span>{nombreMitad(h.nombre).slice(1)}</div>
+                      {h.nota&&<div style={{fontSize:11,color:"#c00",paddingLeft:20}}>⚠️ {h.nota}</div>}
+                    </div>
+                  ))}
+                </div>
+              ):(
                 <div key={idx} style={{marginBottom:5}}>
                   <div style={{fontWeight:700,fontSize:14}}>{fmtQty(i)}{i.nombre.startsWith("½")?<><span style={{color:"#ef4444"}}>½</span>{i.nombre.slice(1)}</>:i.nombre}{i.guarnicionElegida?<span style={{fontWeight:400,fontSize:12}}> — {i.guarnicionElegida}</span>:""}</div>
                   {i.nota&&<div style={{fontSize:11,color:"#c00",paddingLeft:12}}>⚠️ {i.nota}</div>}
