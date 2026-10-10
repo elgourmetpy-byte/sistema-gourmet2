@@ -128,11 +128,11 @@ const generarMesas = () => {
 // del código debe reemplazar a la que ya estaba guardada en el servidor.
 const MENU_VERSION = "2026-08-14-e";
 
-// Clave para /api/state — tiene que ser IDÉNTICA a la variable de entorno
-// APP_SECRET configurada en Render (Environment). Si en Render no está
-// configurada, el servidor no exige nada y esto no rompe nada.
-const APP_SECRET = "UDc1jcHC3VYmAz6_vQZJEtXO";
-const HEADERS_API = { "Content-Type": "application/json", "X-App-Secret": APP_SECRET };
+// ⚠️ ARREGLO oct-2026 (robo de tablets): /api/state ya no usa una clave
+// fija escrita acá (cualquiera podía leerla). Ahora cada dispositivo
+// entra con usuario + PIN contra el servidor (/api/login) y recibe una
+// llave propia que se manda en "X-Sesion". Ver server.js.
+const headersApi = (token) => ({ "Content-Type": "application/json", "X-Sesion": token || "" });
 
 const CARTA_BASE = [
   // LOMITOS
@@ -1037,7 +1037,12 @@ function borrarSesionLocal(){
 // APP
 // ═══════════════════════════════════════════════════════
 function App() {
-  const [usuario,      setUsuario]      = useState(()=>cargarSesionLocal().usuario || null);
+  // Llave que dio el servidor al entrar con PIN. Sin llave no hay usuario
+  // (una tablet con la sesión vieja de antes de oct-2026 vuelve al login).
+  const [token,        setToken]        = useState(()=>cargarSesionLocal().token || null);
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+  const [usuario,      setUsuario]      = useState(()=>{ const s=cargarSesionLocal(); return s.token ? (s.usuario||null) : null; });
   const [loginForm,    setLoginForm]    = useState({usuario:"",pin:""});
   const [loginError,   setLoginError]   = useState("");
   const [usuarios,     setUsuarios]     = useState(USUARIOS);
@@ -1080,8 +1085,8 @@ function App() {
   // login ni perder la mesa/delivery que se estaba atendiendo.
   useEffect(()=>{
     const usuarioSinPin = usuario ? {id:usuario.id, nombre:usuario.nombre, usuario:usuario.usuario, rol:usuario.rol} : null;
-    guardarSesionLocal({usuario:usuarioSinPin, mozoSesion, mesaActiva, deliveryActivo});
-  },[usuario, mozoSesion, mesaActiva, deliveryActivo]);
+    guardarSesionLocal({usuario:usuarioSinPin, token, mozoSesion, mesaActiva, deliveryActivo});
+  },[usuario, token, mozoSesion, mesaActiva, deliveryActivo]);
 
   const [clientes,          setClientes]          = useState([]);
   const [clienteDetalle,    setClienteDetalle]    = useState(null);
@@ -1161,6 +1166,8 @@ function App() {
   // ═══════════════════════════════════════════════════════
   const [conectado, setConectado] = useState(false);
   const [cargandoInicial, setCargandoInicial] = useState(true);
+  const cargandoInicialRef = useRef(true);
+  cargandoInicialRef.current = cargandoInicial;
   const serverRevRef = useRef(0);
   const applyingRemoteRef = useRef(false);
   const saveTimeoutRef = useRef(null);
@@ -1243,9 +1250,28 @@ function App() {
     return Array.from(porId.values());
   };
 
+  // El servidor rechazó la llave (cambiaron el PIN de este usuario, o se
+  // salió): vuelve al login sin guardar nada más.
+  const sesionVencida = () => {
+    setToken(null); tokenRef.current = null;
+    setUsuario(null); setMozoSesion(null); setMesaActiva(null); setDeliveryActivo(null);
+    setCargandoInicial(true);
+    setLoginError("Tu sesión se cerró. Ingresá de nuevo con tu PIN.");
+  };
+  const sesionVencidaRef = useRef(sesionVencida);
+  sesionVencidaRef.current = sesionVencida;
+  // fetch a /api/state con la llave de este dispositivo
+  const apiState = (opciones={}) =>
+    fetch("/api/state",{...opciones,headers:headersApi(tokenRef.current)}).then(r=>{
+      if(r.status===401){ sesionVencidaRef.current(); throw new Error("sesion"); }
+      return r.json();
+    });
+
   // Carga inicial: trae lo que ya está guardado en el servidor
+  // (se repite cada vez que alguien entra con su PIN)
   useEffect(() => {
-    fetch("/api/state",{headers:HEADERS_API}).then(r=>r.json()).then(res=>{
+    if(!token) return;
+    apiState().then(res=>{
       applyingRemoteRef.current = true;
       const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
       const nuevaBase = {};
@@ -1262,8 +1288,9 @@ function App() {
       setConectado(true);
       setCargandoInicial(false);
       setTimeout(()=>{applyingRemoteRef.current=false;},50);
-    }).catch(()=>{ setConectado(false); setCargandoInicial(false); });
-  },[]);
+    }).catch(e=>{ if(e.message==="sesion") return; setConectado(false); setCargandoInicial(false); });
+    // eslint-disable-next-line
+  },[token]);
 
   // ── Guardado de cambios locales al servidor ────────────
   // Se dispara con una pequeña espera (700 ms) para no mandar mil
@@ -1317,8 +1344,8 @@ function App() {
 
     sincronizandoRef.current = true;
     const origen = {usuario: usuario?.nombre||null, rol: usuario?.rol||null};
-    fetch("/api/state",{method:"POST",headers:HEADERS_API,body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
-      .then(r=>r.json()).then(res=>{
+    apiState({method:"POST",body:JSON.stringify({rev:serverRevRef.current,dirty,scalars,origen})})
+      .then(res=>{
         // Si el servidor descartó algo (una mesa ya cobrada que esta
         // pantalla tenía vieja), forzamos que el próximo chequeo de 4 s
         // traiga la versión buena aunque nadie más haya guardado.
@@ -1338,7 +1365,7 @@ function App() {
         Object.keys(scalars).forEach(k=>{ if(k!=="menuVersion") nuevaBase[k]=enviado[k]; });
         baseSincronizadaRef.current = nuevaBase;
       })
-      .catch(()=>setConectado(false))
+      .catch(e=>{ if(e.message!=="sesion") setConectado(false); })
       .finally(()=>{ sincronizandoRef.current = false; });
   };
   const enviarCambiosRef = useRef(enviarCambiosAlServidor);
@@ -1367,7 +1394,9 @@ function App() {
       // Mientras se está imprimiendo no consultamos ni redibujamos nada:
       // si la pantalla se refresca, el navegador cancela el trabajo de impresión.
       if(window.__IMPRIMIENDO__) return;
-      fetch("/api/state",{headers:HEADERS_API}).then(r=>r.json()).then(res=>{
+      // Sin llave (pantalla de login) o todavía cargando: nada que revisar.
+      if(!tokenRef.current || cargandoInicialRef.current) return;
+      apiState().then(res=>{
         if(res.rev>serverRevRef.current){
           applyingRemoteRef.current=true;
           const menuDesactualizado = res.data.menuVersion !== MENU_VERSION;
@@ -1392,7 +1421,7 @@ function App() {
           setTimeout(()=>{applyingRemoteRef.current=false;},50);
         }
         setConectado(true);
-      }).catch(()=>setConectado(false));
+      }).catch(e=>{ if(e.message!=="sesion") setConectado(false); });
     },4000);
     return ()=>clearInterval(t);
     // eslint-disable-next-line
@@ -1462,15 +1491,47 @@ function App() {
   },[usuario]);
 
   // ── Login ─────────────────────────────────────────────
+  // El PIN lo valida el SERVIDOR (ver server.js /api/login), que le da a
+  // este dispositivo una llave para leer y guardar datos.
+  const [entrando, setEntrando] = useState(false);
   const handleLogin = () => {
-    const u = usuarios.find(u=>u.usuario===loginForm.usuario&&u.pin===loginForm.pin);
-    if (!u){setLoginError("Usuario o PIN incorrecto");return;}
-    setUsuario(u);setLoginError("");
-    setSeccion(PERMISOS[u.rol][0]);
-    showToast(`Bienvenido/a, ${u.nombre}`);
-    if(u.rol==="mozo"){ setMozoSesion(null); setModalSeleccionMozo(true); }
+    if (entrando) return;
+    setEntrando(true); setLoginError("");
+    fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({usuario:loginForm.usuario,pin:loginForm.pin})})
+      .then(r=>r.json().then(j=>({ok:r.ok,j})))
+      .then(({ok,j})=>{
+        let u, llave;
+        if (j.sinUsuarios) {
+          // Sistema nuevo sin usuarios en el servidor: vale la lista de fábrica.
+          u = usuarios.find(u=>u.usuario===loginForm.usuario&&u.pin===loginForm.pin);
+          llave = "sin-usuarios";
+          if (!u){setLoginError("Usuario o PIN incorrecto");return;}
+        } else if (!ok || !j.token) {
+          setLoginError(j.error||"Usuario o PIN incorrecto");return;
+        } else {
+          u = j.usuario; llave = j.token;
+        }
+        setCargandoInicial(true);
+        setToken(llave);
+        setUsuario(u);setLoginForm({usuario:"",pin:""});
+        setSeccion(PERMISOS[u.rol][0]);
+        showToast(`Bienvenido/a, ${u.nombre}`);
+        if(u.rol==="mozo"){ setMozoSesion(null); setModalSeleccionMozo(true); }
+      })
+      .catch(()=>setLoginError("Sin conexión con el servidor. Probá de nuevo."))
+      .finally(()=>setEntrando(false));
   };
-  const handleLogout = () => {registrarLog("Salida");setUsuario(null);setLoginForm({usuario:"",pin:""});setMesaActiva(null);setDeliveryActivo(null);setMozoSesion(null);borrarSesionLocal();};
+  const handleLogout = () => {
+    // Antes de soltar la llave: se manda lo pendiente y el "Salida" al log.
+    const llave = tokenRef.current;
+    enviarCambiosRef.current();
+    const salida = {id:Date.now(),usuario:usuario?.nombre||"—",rol:usuario?.rol||"—",accion:"Salida",detalle:"",hora:ahora(),fecha:hoy()};
+    fetch("/api/state",{method:"POST",headers:headersApi(llave),body:JSON.stringify({rev:serverRevRef.current,dirty:{log:{upsert:[salida],del:[]}},origen:{usuario:usuario?.nombre||null,rol:usuario?.rol||null}})})
+      .catch(()=>{})
+      .finally(()=>fetch("/api/logout",{method:"POST",headers:headersApi(llave)}).catch(()=>{}));
+    setToken(null);tokenRef.current=null;setCargandoInicial(true);
+    setUsuario(null);setLoginForm({usuario:"",pin:""});setMesaActiva(null);setDeliveryActivo(null);setMozoSesion(null);borrarSesionLocal();
+  };
 
   const elegirMozoSesion = (nombre) => {
     setMozoSesion(nombre);
@@ -2400,19 +2461,9 @@ function App() {
   const nombresMozos =usuarios.filter(u=>u.rol==="mozo").map(u=>u.nombre);
 
   // ═══════════════════════════════════════════════════════
-  // CARGANDO DATOS COMPARTIDOS
+  // LOGIN (primero: sin PIN el servidor ya no entrega ningún dato)
   // ═══════════════════════════════════════════════════════
-  if(cargandoInicial) return(
-    <div style={{minHeight:"100vh",background:"#0f1117",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'Inter',sans-serif",color:"#9ca3af"}}>
-      <div style={{width:36,height:36,border:"3px solid #2a2d3a",borderTopColor:"#f97316",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}></div>
-      <div>Conectando con el servidor de El Gourmet...</div>
-    </div>
-  );
-
-  // ═══════════════════════════════════════════════════════
-  // LOGIN
-  // ═══════════════════════════════════════════════════════
-  if(!usuario) return(
+  if(!usuario || !token) return(
     <div style={{minHeight:"100vh",background:"#0f1117",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"'Inter',sans-serif"}}>
       <div style={{background:"#1a1d27",border:"1px solid #2a2d3a",borderRadius:20,padding:36,width:340}}>
         <div style={{textAlign:"center",marginBottom:24}}>
@@ -2428,8 +2479,18 @@ function App() {
           </div>
         ))}
         {loginError&&<div style={{color:"#ef4444",fontSize:13,marginBottom:8}}>⚠️ {loginError}</div>}
-        <button onClick={handleLogin} style={{width:"100%",background:"#f97316",border:"none",color:"#fff",borderRadius:10,padding:12,cursor:"pointer",fontWeight:800,fontSize:15,marginTop:8}}>Ingresar</button>
+        <button onClick={handleLogin} disabled={entrando} style={{width:"100%",background:"#f97316",border:"none",color:"#fff",borderRadius:10,padding:12,cursor:"pointer",fontWeight:800,fontSize:15,marginTop:8,opacity:entrando?0.6:1}}>{entrando?"Entrando...":"Ingresar"}</button>
       </div>
+    </div>
+  );
+
+  // ═══════════════════════════════════════════════════════
+  // CARGANDO DATOS COMPARTIDOS
+  // ═══════════════════════════════════════════════════════
+  if(cargandoInicial) return(
+    <div style={{minHeight:"100vh",background:"#0f1117",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:14,fontFamily:"'Inter',sans-serif",color:"#9ca3af"}}>
+      <div style={{width:36,height:36,border:"3px solid #2a2d3a",borderTopColor:"#f97316",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}></div>
+      <div>Conectando con el servidor de El Gourmet...</div>
     </div>
   );
 
