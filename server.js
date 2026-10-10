@@ -45,22 +45,81 @@ const BACKUP_DIR = path.join(DATA_DIR, "backups");
 if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
 app.use(express.json({ limit: "5mb" }));
+// Render pone un intermediario adelante: así req.ip es la IP real del dispositivo.
+app.set("trust proxy", 1);
 
-// ── Traba simple para /api/state ────────────────────────
-// Hasta ahora CUALQUIERA que conociera la dirección del sistema podía leer
-// o modificar todos los datos (mesas, ventas, clientes, arqueo) sin ningún
-// usuario ni contraseña — probablemente así se reseteó el arqueo abierto
-// la noche del 19/9/2026 sin que quede registrado quién lo hizo.
-// Si se configura la variable de entorno APP_SECRET (en Render → el
-// servicio → Environment), el sistema exige que cada pedido a /api/state
-// mande esa misma clave en el encabezado "X-App-Secret" (index.html ya la
-// manda). Si no se configura APP_SECRET, la traba queda desactivada, como
-// antes — para no cortarle el servicio a nadie hasta que se configure.
-const APP_SECRET = process.env.APP_SECRET || "";
-function exigirClave(req, res, next) {
-  if (!APP_SECRET) return next();
-  if (req.headers["x-app-secret"] === APP_SECRET) return next();
-  res.status(401).json({ error: "no autorizado" });
+// ── Traba de acceso: hay que entrar con usuario y PIN ───
+// ⚠️ ARREGLO oct-2026 (robo de tablets): antes cualquiera que conociera
+// la dirección del sistema podía leer y modificar TODO (mesas, ventas,
+// clientes, y hasta la lista de usuarios con sus PIN) sin ningún login.
+// El login con PIN existía solo en la pantalla; el servidor no lo pedía.
+// (La clave fija APP_SECRET de set-2026 no servía: quedaba escrita en
+// index.html, que cualquiera puede descargar.)
+// Ahora el servidor es el que controla:
+//  - /api/login recibe usuario + PIN, los compara con la lista de
+//    usuarios guardada y, si están bien, le da una "llave" (token) a
+//    ese dispositivo.
+//  - /api/state (leer y guardar) solo responde con una llave válida en
+//    el encabezado "X-Sesion".
+//  - La llave queda atada al PIN con que se entró: si después se cambia
+//    el PIN de ese usuario, TODAS sus llaves viejas dejan de servir (una
+//    tablet robada queda afuera apenas se cambia el PIN). El dispositivo
+//    que hizo el cambio sigue adentro.
+//  - Muchos PIN equivocados seguidos bloquean el login por 15 minutos.
+const crypto = require("crypto");
+const SESIONES_FILE = path.join(DATA_DIR, "sesiones.json");
+const hashPin = (pin) => crypto.createHash("sha256").update("gourmet:" + String(pin)).digest("hex");
+
+let sesiones = {};
+try { sesiones = JSON.parse(fs.readFileSync(SESIONES_FILE, "utf8")) || {}; } catch (e) { sesiones = {}; }
+let colaSesiones = Promise.resolve();
+function guardarSesiones() {
+  colaSesiones = colaSesiones
+    .then(() => fs.promises.writeFile(SESIONES_FILE, JSON.stringify(sesiones)))
+    .catch(e => console.error("No se pudieron guardar las sesiones:", e.message));
+  return colaSesiones;
+}
+
+function usuariosGuardados() {
+  const u = estado && estado.data && estado.data.usuarios;
+  return Array.isArray(u) && u.length ? u : null;
+}
+
+// La sesión, si la llave existe y el PIN de ese usuario no cambió desde que entró.
+function sesionValida(token) {
+  if (!token || typeof token !== "string") return null;
+  const s = sesiones[token];
+  if (!s) return null;
+  const u = (usuariosGuardados() || []).find(x => x && x.id === s.userId);
+  if (!u || hashPin(u.pin) !== s.pinHash) return null;
+  return s;
+}
+
+function exigirSesion(req, res, next) {
+  // Sistema recién instalado, sin usuarios todavía en el servidor: no hay
+  // contra qué validar, se deja pasar (igual que antes).
+  if (!usuariosGuardados()) return next();
+  const token = req.headers["x-sesion"];
+  const s = sesionValida(token);
+  if (!s) return res.status(401).json({ error: "sesion" });
+  req.sesion = { token, userId: s.userId };
+  next();
+}
+
+// Freno a quien prueba PIN al azar: máx. 10 errores por conexión y 30 por
+// usuario cada 15 minutos.
+const intentosFallidos = new Map();
+const VENTANA_INTENTOS = 15 * 60 * 1000;
+function demasiadosIntentos(clave, max) {
+  const ahora = Date.now();
+  const lista = (intentosFallidos.get(clave) || []).filter(t => ahora - t < VENTANA_INTENTOS);
+  intentosFallidos.set(clave, lista);
+  return lista.length >= max;
+}
+function anotarFallo(clave) {
+  const lista = intentosFallidos.get(clave) || [];
+  lista.push(Date.now());
+  intentosFallidos.set(clave, lista);
 }
 
 // ── Página principal del sistema ────────────────────────
@@ -208,13 +267,51 @@ function aplicarCambios(dataPrevia, dirty, scalars) {
   return { data, resumen, rechazados };
 }
 
+// ── Entrar con usuario y PIN ────────────────────────────
+app.post("/api/login", (req, res) => {
+  const { usuario, pin } = req.body || {};
+  const lista = usuariosGuardados();
+  // Sin usuarios en el servidor (sistema nuevo): la pantalla usa su lista
+  // de fábrica y no hace falta llave.
+  if (!lista) return res.json({ sinUsuarios: true });
+  const claveIp = "ip:" + req.ip;
+  const claveUsr = "u:" + String(usuario || "").toLowerCase();
+  if (demasiadosIntentos(claveIp, 10) || demasiadosIntentos(claveUsr, 30)) {
+    return res.status(429).json({ error: "Demasiados intentos. Esperá 15 minutos." });
+  }
+  const u = lista.find(x => x && x.usuario === usuario && String(x.pin) === String(pin));
+  if (!u) {
+    anotarFallo(claveIp); anotarFallo(claveUsr);
+    registrarAuditoria({ hora: new Date().toISOString(), login: "fallido", usuario: String(usuario || ""), ip: req.ip });
+    return res.status(401).json({ error: "Usuario o PIN incorrecto" });
+  }
+  const token = crypto.randomBytes(24).toString("hex");
+  sesiones[token] = { userId: u.id, pinHash: hashPin(u.pin), creado: new Date().toISOString(), ip: req.ip };
+  // No acumular llaves para siempre: se conservan las 300 más nuevas.
+  const tokens = Object.keys(sesiones);
+  if (tokens.length > 300) {
+    tokens.sort((a, b) => String(sesiones[a].creado).localeCompare(String(sesiones[b].creado)))
+      .slice(0, tokens.length - 300).forEach(t => delete sesiones[t]);
+  }
+  guardarSesiones();
+  registrarAuditoria({ hora: new Date().toISOString(), login: "ok", usuario: u.nombre, rol: u.rol, ip: req.ip });
+  res.json({ token, usuario: { id: u.id, nombre: u.nombre, usuario: u.usuario, rol: u.rol } });
+});
+
+// ── Salir: la llave de este dispositivo deja de servir ──
+app.post("/api/logout", (req, res) => {
+  const token = req.headers["x-sesion"];
+  if (token && sesiones[token]) { delete sesiones[token]; guardarSesiones(); }
+  res.json({ ok: true });
+});
+
 // ── El sistema pide los datos compartidos ───────────────
-app.get("/api/state", exigirClave, (req, res) => {
+app.get("/api/state", exigirSesion, (req, res) => {
   res.json(estado);
 });
 
 // ── El sistema guarda cambios nuevos ────────────────────
-app.post("/api/state", exigirClave, async (req, res) => {
+app.post("/api/state", exigirSesion, async (req, res) => {
   const body = req.body || {};
   const origen = body.origen || {};
   let resumen = [];
@@ -245,6 +342,17 @@ app.post("/api/state", exigirClave, async (req, res) => {
   // (para no responder "ok" antes de que el dato esté a salvo), pero
   // como ahora son asíncronas, el servidor puede seguir atendiendo a
   // otras tablets mientras tanto — ya no se congela nadie más.
+  // Si quien guardó cambió su PROPIO PIN, su llave se actualiza para que
+  // no lo saque del sistema (las llaves de otros dispositivos con el PIN
+  // viejo sí dejan de servir).
+  if (req.sesion && sesiones[req.sesion.token]) {
+    const u = (usuariosGuardados() || []).find(x => x && x.id === req.sesion.userId);
+    if (u && hashPin(u.pin) !== sesiones[req.sesion.token].pinHash) {
+      sesiones[req.sesion.token].pinHash = hashPin(u.pin);
+      guardarSesiones();
+    }
+  }
+
   await guardarEstado(estado);
   await backupPeriodico(estado);
   registrarAuditoria({
