@@ -389,11 +389,49 @@ app.post("/api/print-jobs", (req, res) => {
   res.json({ ok: true, id: job.id });
 });
 
-app.get("/api/print-jobs", (req, res) => {
+// ── Candado del agente (oct-2026) ──────────────────────
+// Antes CUALQUIER programa podía retirar comandas del buzón. Apareció un
+// segundo agente (en otro aparato del local) que se llevaba las mismas
+// comandas que el de la caja → salían en las dos impresoras a la vez.
+// Ahora el agente manda su llave en "X-Agente". La PRIMERA llave que
+// llega queda anotada en DATA_DIR/agente-impresion.json y desde ahí solo
+// esa puede retirar comandas; cualquier otro agente (o uno viejo sin
+// llave) recibe 401 y no imprime nada. Para cambiar de PC: el dueño
+// llama a POST /api/print-agent/reset con su sesión, y el próximo agente
+// que se conecte queda como el nuevo autorizado.
+const AGENTE_FILE = path.join(DATA_DIR, "agente-impresion.json");
+const hashLlave = (k) => crypto.createHash("sha256").update("agente:" + String(k)).digest("hex");
+let agenteAutorizado = null;
+try { agenteAutorizado = JSON.parse(fs.readFileSync(AGENTE_FILE, "utf8")).llave || null; } catch (e) { agenteAutorizado = null; }
+
+function exigirAgente(req, res, next) {
+  const llave = req.headers["x-agente"];
+  if (!llave || typeof llave !== "string" || llave.length < 16) return res.status(401).json({ error: "agente" });
+  const h = hashLlave(llave);
+  if (!agenteAutorizado) {
+    agenteAutorizado = h;
+    fs.promises.writeFile(AGENTE_FILE, JSON.stringify({ llave: h, desde: new Date().toISOString(), ip: req.ip }))
+      .catch(e => console.error("No se pudo guardar la llave del agente:", e.message));
+    console.log(`[impresion] Agente autorizado desde ${req.ip}`);
+  } else if (h !== agenteAutorizado) {
+    return res.status(401).json({ error: "agente" });
+  }
+  next();
+}
+
+app.post("/api/print-agent/reset", exigirSesion, (req, res) => {
+  const u = (usuariosGuardados() || []).find(x => x && req.sesion && x.id === req.sesion.userId);
+  if (usuariosGuardados() && (!u || u.rol !== "dueno")) return res.status(403).json({ error: "solo dueño" });
+  agenteAutorizado = null;
+  fs.promises.unlink(AGENTE_FILE).catch(() => {});
+  res.json({ ok: true });
+});
+
+app.get("/api/print-jobs", exigirAgente, (req, res) => {
   res.json({ jobs: colaImpresion });
 });
 
-app.post("/api/print-jobs/:id/done", (req, res) => {
+app.post("/api/print-jobs/:id/done", exigirAgente, (req, res) => {
   const id = Number(req.params.id);
   colaImpresion = colaImpresion.filter(j => j.id !== id);
   res.json({ ok: true, pendientes: colaImpresion.length });
