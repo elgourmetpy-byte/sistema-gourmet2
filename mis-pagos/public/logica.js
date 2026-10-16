@@ -79,7 +79,9 @@
   function ocurrencias(p, desde, hasta) {
     const res = [];
     if (!p || p.borrado) return res;
-    const inicio = p.desde && p.desde > desde ? p.desde : desde;
+    // Un pago cargado a mitad de mes igual muestra todo ese mes (para tildar lo ya pagado).
+    const piso = p.desde ? inicioDeMes(p.desde) : null;
+    const inicio = piso && piso > desde ? piso : desde;
     if (inicio > hasta) return res;
     const agregar = (periodo, venc, mes) => res.push({ pagoId: p.id, periodo, venc, mes: mes || mesDe(venc) });
     const enRango = (v) => v >= inicio && v <= hasta;
@@ -116,6 +118,25 @@
   }
 
   const claveReg = (pagoId, periodo) => pagoId + "|" + periodo;
+
+  // ── Fecha cambiada a mano para un mes puntual ──────────────────
+  // (la tarjeta o la luz que este mes vence otro día)
+  const idVencimiento = (pagoId, periodo) => "v|" + pagoId + "|" + periodo;
+  function indexarVencimientos(est) {
+    const m = new Map();
+    for (const v of (est && est.vencimientos) || []) if (!v.borrado && v.venc) m.set(claveReg(v.pagoId, v.periodo), v.venc);
+    return m;
+  }
+  /** Como `ocurrencias`, pero respetando las fechas cambiadas a mano. */
+  function ocurrenciasDe(p, desde, hasta, cambios) {
+    if (!cambios || !cambios.size || ![...cambios.keys()].some((k) => k.startsWith(p.id + "|"))) return ocurrencias(p, desde, hasta);
+    return ocurrencias(p, sumarDias(desde, -45), sumarDias(hasta, 45))
+      .map((oc) => {
+        const v = cambios.get(claveReg(p.id, oc.periodo));
+        return v ? Object.assign({}, oc, { venc: v, original: oc.venc, cambiada: true }) : oc;
+      })
+      .filter((oc) => (oc.venc ? oc.venc >= desde && oc.venc <= hasta : oc.mes >= mesDe(desde) && oc.mes <= mesDe(hasta)));
+  }
   /** Registros de pago válidos; si dos celulares tildaron el mismo pago, queda uno solo. */
   function registrosVigentes(regs) {
     const m = new Map();
@@ -153,12 +174,13 @@
    */
   function listaActual(est, hoy) {
     const idx = indexarRegistros(est.registros);
+    const cambios = indexarVencimientos(est);
     const ini = inicioDeMes(hoy), fin = finDeMes(hoy);
     const atras = sumarDias(hoy, -60), adelante = sumarDias(hoy, 7);
     const hasta = adelante > fin ? adelante : fin;
     const out = [];
     for (const p of pagosVivos(est)) {
-      for (const oc of ocurrencias(p, atras, hasta)) {
+      for (const oc of ocurrenciasDe(p, atras, hasta, cambios)) {
         const e = estadoDe(oc, idx, hoy);
         const pagado = e.estado === "pagado";
         if (terminado(p) && !pagado) continue;
@@ -182,11 +204,12 @@
   /** Pagos sin pagar que vencen hoy o dentro de 2 días (para la notificación). */
   function avisosDelDia(est, hoy) {
     const idx = indexarRegistros(est.registros);
+    const cambios = indexarVencimientos(est);
     const en2 = sumarDias(hoy, 2);
     const res = { hoy: [], en2: [] };
     for (const p of pagosVivos(est)) {
       if (terminado(p)) continue;
-      for (const oc of ocurrencias(p, hoy, en2)) {
+      for (const oc of ocurrenciasDe(p, hoy, en2, cambios)) {
         if (idx.has(claveReg(oc.pagoId, oc.periodo))) continue;
         if (oc.venc === hoy) res.hoy.push(p);
         else if (oc.venc === en2) res.en2.push(p);
@@ -336,7 +359,7 @@
     }
     return [...m.values()];
   }
-  function estadoVacio() { return { version: 1, pagos: [], registros: [], personal: [], config: {} }; }
+  function estadoVacio() { return { version: 1, pagos: [], registros: [], personal: [], vencimientos: [], config: {} }; }
   function fusionarEstado(a, b) {
     if (!a) return b; if (!b) return a;
     const ca = a.config || {}, cb = b.config || {};
@@ -345,6 +368,7 @@
       pagos: fusionarLista(a.pagos, b.pagos),
       registros: fusionarLista(a.registros, b.registros),
       personal: fusionarLista(a.personal, b.personal),
+      vencimientos: fusionarLista(a.vencimientos, b.vencimientos),
       config: (cb.updatedAt || 0) > (ca.updatedAt || 0) ? cb : ca,
     };
   }
@@ -402,7 +426,7 @@
     ];
     const personal = ["Mirta", "Erna", "Leo", "Carolina", "Mario", "Manu", "Zulma", "Gloria", "Irene"]
       .map((nombre) => ({ id: nuevoId(), nombre, sueldoSemanal: 0, ips: true, aguinaldo: true, extras: 0, updatedAt: t }));
-    return { version: 1, pagos, registros: [], personal, config: { ipsPatronal: 16.5, updatedAt: t } };
+    return { version: 1, pagos, registros: [], personal, vencimientos: [], config: { ipsPatronal: 16.5, updatedAt: t } };
   }
 
   return {
@@ -410,7 +434,7 @@
     aISO, partes, diasDelMes, sumarDias, diferenciaDias, diaSemana, hoyLocal, hoyEnZona, horaEnZona,
     mesDe, inicioDeMes, finDeMes, sumarMeses, nombreMes, fechaLarga, fechaCorta, fechaDMA,
     miles, fmtGs, leerMonto, nuevoId,
-    ocurrencias, claveReg, registrosVigentes, indexarRegistros, estadoDe, terminado, pagosVivos,
+    ocurrencias, ocurrenciasDe, idVencimiento, indexarVencimientos, claveReg, registrosVigentes, indexarRegistros, estadoDe, terminado, pagosVivos,
     listaActual, avisosDelDia, textoAviso, ultimoRegistro, describirFrecuencia,
     registrosDelMes, totalesDelMes, costoColaborador, personalVivo,
     normalizar, extraerMonto, interpretarVoz,

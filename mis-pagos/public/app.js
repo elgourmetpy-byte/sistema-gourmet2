@@ -170,6 +170,7 @@ function filaPago(x) {
   else cuando = `Vence ${L.fechaCorta(oc.venc)}${x.dias === 2 ? " · en 2 días" : ""}`;
   const extra = [];
   if (p.frecuencia === "quincenal") extra.push(oc.periodo.endsWith("q1") ? "1ª quincena" : "2ª quincena");
+  if (oc.cambiada && x.estado !== "pagado") extra.push("fecha cambiada este mes");
   if (p.cuotasRestantes != null) extra.push(p.cuotasRestantes === 0 ? "¡última cuota pagada!" : `faltan ${plural(p.cuotasRestantes, "cuota", "cuotas")}`);
   if (x.estado !== "pagado") {
     const u = L.ultimoRegistro(p.id, estado.registros);
@@ -186,8 +187,12 @@ function filaPago(x) {
   </button>`;
 }
 
-/** Fecha de vencimiento de un pago puntual a partir de su "periodo". */
+/** Fecha de vencimiento de un pago puntual (respeta si se cambió a mano para ese mes). */
 function vencDePeriodo(p, periodo) {
+  return L.indexarVencimientos(estado).get(L.claveReg(p.id, periodo)) || vencNormal(p, periodo);
+}
+/** La fecha que le toca según el día cargado en el pago. */
+function vencNormal(p, periodo) {
   if (/^\d{4}-\d{2}-\d{2}$/.test(periodo)) return periodo;
   const [y, m] = periodo.slice(0, 7).split("-").map(Number);
   const dm = L.diasDelMes(y, m);
@@ -210,12 +215,22 @@ function abrirPago(pagoId, periodo, montoDicho) {
   const p = estado.pagos.find((x) => x.id === pagoId);
   if (!p) return;
   const reg = L.indexarRegistros(estado.registros).get(L.claveReg(pagoId, periodo));
-  const venc = vencDePeriodo(p, periodo);
+  const venc = vencDePeriodo(p, periodo), normal = vencNormal(p, periodo);
+  const cambiada = venc !== normal;
   const ult = L.ultimoRegistro(pagoId, estado.registros);
   const monto = reg ? reg.monto : montoDicho || "";
+  const datos = `data-p="${esc(p.id)}" data-per="${esc(periodo)}"`;
   abrirHoja(`
     <h2>${esc(p.nombre)} <span class="chip ${p.grupo}">${L.GRUPOS[p.grupo]}</span></h2>
-    <p class="ayuda">${venc ? "Vence el " + L.fechaLarga(venc) : "Sin día fijo"} · ${esc(periodoLegible(p, periodo))}</p>
+    <p class="ayuda">${venc ? "Vence el " + L.fechaLarga(venc) : "Sin día fijo"} · ${esc(periodoLegible(p, periodo))}${cambiada ? " · <b>fecha cambiada</b>" : ""}</p>
+    ${!reg ? `<button class="boton chico" data-a="verCambioVenc" style="margin-top:8px">📅 Cambiar la fecha de vencimiento</button>
+      <div id="cambio-venc" class="oculto tarjeta" style="margin-top:10px">
+        <label class="etq" for="f-venc" style="margin-top:0">Este mes vence el</label>
+        <input id="f-venc" type="date" class="campo" value="${venc || hoy()}">
+        <button class="boton primario" data-a="guardarVenc" ${datos}>Guardar, solo para este mes</button>
+        ${cambiada ? `<button class="boton" data-a="quitarVenc" ${datos}>Volver a la fecha normal${normal ? " (" + L.fechaCorta(normal) + ")" : ""}</button>` : ""}
+        <button class="boton" data-a="editarPagoDesdeHoja" ${datos}>Cambiar el día para todos los meses</button>
+      </div>` : ""}
     ${p.cuotasRestantes != null ? `<p class="ayuda">Faltan ${plural(p.cuotasRestantes, "cuota", "cuotas")}${!reg && p.cuotasRestantes > 0 ? " (al pagar queda" + (p.cuotasRestantes - 1 === 1 ? " 1)" : `n ${p.cuotasRestantes - 1})`) : ""}</p>` : ""}
     <label class="etq" for="f-monto">¿Cuánto pagaste?</label>
     <input id="f-monto" class="campo monto" data-gs inputmode="numeric" autocomplete="off" placeholder="Gs. 0" value="${monto ? L.miles(monto) : ""}">
@@ -774,6 +789,24 @@ const acciones = {
   usarMonto: (el) => { $("#f-monto").value = L.miles(el.dataset.v); },
   confirmarPago: (el) => confirmarPago(el.dataset.p, el.dataset.per),
   desmarcar: (el) => desmarcar(el.dataset.p, el.dataset.per),
+  verCambioVenc: () => { $("#cambio-venc").classList.toggle("oculto"); },
+  guardarVenc: (el) => {
+    const v = $("#f-venc").value;
+    if (!v) return;
+    const { p: pagoId, per: periodo } = el.dataset;
+    estado.vencimientos = estado.vencimientos || [];
+    const id = L.idVencimiento(pagoId, periodo);
+    let c = estado.vencimientos.find((x) => x.id === id);
+    if (!c) { c = { id, pagoId, periodo }; estado.vencimientos.push(c); }
+    Object.assign(c, { venc: v, borrado: false }); tocar(c);
+    cerrarHoja(); cambio(); aviso("📅 Este mes vence el " + L.fechaLarga(v));
+  },
+  quitarVenc: (el) => {
+    const c = (estado.vencimientos || []).find((x) => x.id === L.idVencimiento(el.dataset.p, el.dataset.per));
+    if (c) { c.borrado = true; tocar(c); }
+    cerrarHoja(); cambio(); aviso("Volvió a la fecha normal");
+  },
+  editarPagoDesdeHoja: (el) => { cerrarHoja(); ui.borrador = borradorDe(estado.pagos.find((p) => p.id === el.dataset.p)); hojaPago(); },
   cerrar: () => cerrarHoja(),
   voz: () => abrirVoz(),
   vozOtraVez: () => escuchar(window.SpeechRecognition || window.webkitSpeechRecognition, "es-PY"),
