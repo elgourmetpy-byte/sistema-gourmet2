@@ -8,9 +8,10 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node test/sync.test.js && node test/servidor.test.js"
+    "test": "node test/sync.test.js && node test/sync-cliente.test.js && node test/servidor.test.js && node test/mis-pagos.test.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "web-push": "^3.6.7"
   }
 }

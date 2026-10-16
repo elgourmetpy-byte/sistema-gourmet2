@@ -1,3 +1,8 @@
 node_modules/
 data.json
-.DS_Store
+data.json.tmp
+auditoria.log
+backups/
+.claude/
+mis-pagos/datos-prueba/
+mis-pagos-datos/

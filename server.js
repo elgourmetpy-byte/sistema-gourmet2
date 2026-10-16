@@ -402,6 +402,15 @@ app.post("/api/print-jobs/:id/done", (req, res) => {
 // ── Para saber si el servidor está vivo ─────────────────
 app.get("/health", (req, res) => res.send("ok"));
 
+// ── Mis Pagos (pagos de la casa y del local) ────────────
+// App aparte que vive en /pagos, con su propio PIN y sus datos en
+// DATA_DIR/mis-pagos-datos. Si algo falla al cargarla, el sistema sigue igual.
+try {
+  app.use("/pagos", require("./mis-pagos/router")({ dataDir: DATA_DIR }));
+} catch (e) {
+  console.error("Mis Pagos no se pudo cargar:", e.message);
+}
+
 module.exports = { app, aplicarCambios, DATA_FILE };
 
 if (require.main === module) {
